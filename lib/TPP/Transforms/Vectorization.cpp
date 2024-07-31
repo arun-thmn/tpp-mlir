@@ -26,36 +26,24 @@ using namespace mlir;
 namespace mlir {
 namespace tpp {
 
-struct LinalgGenericToVector : OpRewritePattern<linalg::FillOp> {
-  using OpRewritePattern<linalg::FillOp>::OpRewritePattern;
+template <typename LinalgOp>
+struct LinalgToVector : OpRewritePattern<LinalgOp> {
+  using OpRewritePattern<LinalgOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(linalg::FillOp genOp,
+  LogicalResult matchAndRewrite(LinalgOp linalgOp,
                                 PatternRewriter &rewriter) const override {
-	 return  linalg::vectorize(rewriter, genOp);
-  }
-};
-
-struct LinalgBRGEMMToVector : OpRewritePattern<linalg::BatchReduceMatmulOp> {
-  using OpRewritePattern<linalg::BatchReduceMatmulOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(linalg::BatchReduceMatmulOp brmOp,
-                                PatternRewriter &rewriter) const override {
-          
- 	  return  linalg::vectorize(rewriter, brmOp);
+    return linalg::vectorize(rewriter, linalgOp);
   }
 };
 
 struct VectorizationPass
-    : public impl::VectorizationPassBase<
-          VectorizationPass> {
+    : public impl::VectorizationPassBase<VectorizationPass> {
 
-
- void populateCombinePatterns(RewritePatternSet &patterns) {
-    patterns.add<LinalgGenericToVector>(patterns.getContext());
-    patterns.add<LinalgBRGEMMToVector>(patterns.getContext());
-
+  void populateCombinePatterns(RewritePatternSet &patterns) {
+    patterns.add<LinalgToVector<linalg::BatchReduceMatmulOp>>(
+        patterns.getContext());
+    patterns.add<LinalgToVector<linalg::FillOp>>(patterns.getContext());
   }
-
 
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());

@@ -10,10 +10,10 @@
 //===----------------------------------------------------------------------===//
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
-#include "mlir/Dialect/Vector/Transforms/VectorRewritePatterns.h"
-#include "mlir/Dialect/Vector/Transforms/LoweringPatterns.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Vector/Transforms/LoweringPatterns.h"
+#include "mlir/Dialect/Vector/Transforms/VectorRewritePatterns.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 namespace mlir {
@@ -30,9 +30,7 @@ namespace mlir {
 namespace tpp {
 
 struct VectorContractPass
-    : public impl::VectorContractPassBase<
-          VectorContractPass> {
-
+    : public impl::VectorContractPassBase<VectorContractPass> {
 
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
