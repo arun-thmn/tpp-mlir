@@ -40,8 +40,13 @@ def DefaultTppPasses : Pass<"default-tpp-passes", "ModuleOp"> {
     ListOption<"shuffleOrder", "loop-shuffle-order", "unsigned",
                "Permutation order (integer index list) to shuffle the scf forall loop by">,
     Option<"outerParallelLoops", "num-outer-parallel", "unsigned", "0",
-               "Number of outer loops to be parallelized">
-
+               "Number of outer loops to be parallelized">,
+    Option<"linalgToVector", "linalg-to-vector",
+           "bool", /*default=*/"true",
+           "Lower linalg directly to vector.">,
+    Option<"vectorToXsmm", "vector-to-xsmm",
+           "bool", /*default=*/"true",
+           "Lower vector to xsmm.">
   ];
 }
 

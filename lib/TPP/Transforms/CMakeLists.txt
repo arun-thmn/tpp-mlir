@@ -23,6 +23,8 @@ add_mlir_library(TPPTransforms
   LoopInsertion.cpp
   LoopExpansion.cpp
   LoopShuffle.cpp
+  Vectorization.cpp
+  VectorContract.cpp
 
   ADDITIONAL_HEADER_DIRS
     ${PROJECT_SOURCE_DIR}/include/TPP
