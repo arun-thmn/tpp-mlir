@@ -43,7 +43,7 @@ def ConvertLinalgToFunc : Pass<"convert-linalg-to-func", "ModuleOp"> {
                            "linalg::LinalgDialect", "LLVM::LLVMDialect"];
 }
 
-def VectorizationPass : Pass<"test-vectorization-pass",
+def VectorizationPass : Pass<"vectorization-pass",
                                      "func::FuncOp"> {
   let summary = "convert linalg to memref/vector";
   let description = [{
@@ -54,7 +54,7 @@ def VectorizationPass : Pass<"test-vectorization-pass",
 }
 
 
-def VectorContractPass : Pass<"test-vectorContract-pass",
+def VectorContractPass : Pass<"vector-contract-pass",
                                      "func::FuncOp"> {
   let summary = "convert vector rductions to contractions";
   let description = [{
