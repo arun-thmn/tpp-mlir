@@ -23,6 +23,18 @@ def ConvertLinalgToXsmm : Pass<"convert-linalg-to-xsmm", "func::FuncOp"> {
                            "tensor::TensorDialect"];
 }
 
+def ConvertVectorToXsmm : Pass<"convert-vector-to-xsmm", "func::FuncOp"> {
+  let summary = "Convert vector to xsmm";
+  let description = [{
+    Convert vector operations to XSMM operations.
+  }];
+  let dependentDialects = ["func::FuncDialect",
+                           "memref::MemRefDialect",
+                           "vector::VectorDialect",
+                           "xsmm::XsmmDialect"];
+}
+
+
 def VerifyXsmmCalls : Pass<"verify-xsmm-calls", "func::FuncOp"> {
   let summary = "Verify XSMM calls (dispatch and invoke)";
   let description = [{

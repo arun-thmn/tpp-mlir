@@ -40,9 +40,10 @@ struct VectorizationPass
     : public impl::VectorizationPassBase<VectorizationPass> {
 
   void populateCombinePatterns(RewritePatternSet &patterns) {
-    patterns.add<LinalgToVector<linalg::BatchReduceMatmulOp>>(
-        patterns.getContext());
-    patterns.add<LinalgToVector<linalg::FillOp>>(patterns.getContext());
+    patterns
+        .add<LinalgToVector<linalg::BatchReduceMatmulOp>,
+             LinalgToVector<linalg::FillOp>, LinalgToVector<linalg::GenericOp>>(
+            patterns.getContext());
   }
 
   void runOnOperation() override {

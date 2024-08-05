@@ -22,6 +22,7 @@
 #include "TPP/Dialect/Perf/PerfDialect.h"
 #include "TPP/Dialect/Xsmm/XsmmDialect.h"
 #include "TPP/PassUtils.h"
+#include "mlir/Transforms/Passes.h"
 
 using namespace mlir;
 using namespace mlir::tpp;
@@ -97,8 +98,19 @@ private:
       // Bufferize: tensor->memref.
       pm.addPass(createBufferize());
 
-      // Lower all Tile operations.
-      pm.addNestedPass<func::FuncOp>(createLinalgLowering());
+      if (linalgToVector) {
+        pm.addNestedPass<func::FuncOp>(createVectorizationPass());
+        pm.addNestedPass<func::FuncOp>(createVectorContractPass());
+        pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
+        if (vectorToXsmm) {
+          pm.addNestedPass<func::FuncOp>(createConvertVectorToXsmm());
+          pm.addNestedPass<func::FuncOp>(createLoopInvariantCodeMotionPass());
+        }
+        pm.addNestedPass<func::FuncOp>(createConvertVectorToSCFPass());
+      } else {
+        // Lower all Tile operations.
+        pm.addNestedPass<func::FuncOp>(createLinalgLowering());
+      }
       pm.addPass(createCleanup());
     }
     // Low level parallelization passes.

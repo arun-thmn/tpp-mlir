@@ -71,6 +71,14 @@ llvm::cl::opt<unsigned> outerParallelLoops(
     llvm::cl::desc("Number of outer loops to be parallelized"),
     llvm::cl::value_desc("int"), llvm::cl::init(0));
 
+llvm::cl::opt<bool> linalgToVector("linalg-to-vector",
+                                   llvm::cl::desc("Lower linalg to vector"),
+                                   llvm::cl::init(false));
+
+llvm::cl::opt<bool> vectorToXsmm("vector-to-xsmm",
+                                 llvm::cl::desc("Lower vector to xsmm"),
+                                 llvm::cl::init(false));
+
 namespace mlir {
 namespace tpp {
 #define GEN_PASS_DEF_DEFAULTPIPELINE
@@ -145,6 +153,8 @@ private:
       DefaultTppPassesOptions tppDefaultOptions;
       tppDefaultOptions.tileShapeM = tileShapeM;
       tppDefaultOptions.tileShapeN = tileShapeN;
+      tppDefaultOptions.linalgToVector = linalgToVector;
+      tppDefaultOptions.vectorToXsmm = vectorToXsmm;
       if (!shuffleOrder.empty())
         tppDefaultOptions.shuffleOrder = shuffleOrder;
       tppDefaultOptions.linalgToLoops = linalgToLoops;
