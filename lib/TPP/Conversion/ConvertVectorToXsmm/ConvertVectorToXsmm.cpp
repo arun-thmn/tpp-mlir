@@ -675,6 +675,88 @@ isMappableToBrgemm(PatternRewriter &rewriter, vector::ContractionOp contractOp,
                      indexingMap);
 }
 
+struct ConvertVectorTransposeToVnni2
+    : public OpRewritePattern<vector::TransposeOp> {
+  using OpRewritePattern<vector::TransposeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::TransposeOp transposeOp,
+                                PatternRewriter &rewriter) const override {
+    SmallVector<std::function<bool(Operation * op)>> operations;
+    operations.push_back(FuncType<vector::TransposeOp>);
+    SmallVector<Operation *> opChain;
+    if (!WithOps(&transposeOp->getParentOp()->getRegion(0),
+                 transposeOp->getParentOp(), operations, opChain)) {
+      return failure();
+    }
+    assert(opChain[0] == transposeOp);
+
+    SmallVector<OpOperand *> inputs;
+    SmallVector<std::function<bool(Operation * op)>> inputOperations;
+    inputOperations.push_back(FuncType<vector::TransferReadOp>);
+    if (!WithInputs(rewriter, transposeOp, inputOperations, inputs)) {
+      return failure();
+    }
+    SmallVector<OpOperand *> outputs;
+    if (!WithOutput(transposeOp, FuncType<vector::TransferWriteOp>, outputs)) {
+      return failure();
+    }
+
+    Value source = inputs[0]->get();
+    MemRefType outType = cast<MemRefType>(outputs[0]->get().getType());
+    MemRefType sourceType = cast<MemRefType>(source.getType());
+    if (!outType.hasStaticShape() || !sourceType.hasStaticShape() ||
+        !vnni::utils::isInVnniLayout(vnni::utils::VnniOperandRank::TRANSPOSE,
+                                     outType)) {
+      return failure();
+    }
+
+    memref::ExpandShapeOp expandShapeOp =
+        dyn_cast<memref::ExpandShapeOp>(source.getDefiningOp());
+    if (!expandShapeOp || expandShapeOp.getSrcType().getRank() != 2)
+      return failure();
+
+    source = expandShapeOp.getSrc();
+    xsmm::UnaryInfo unaryInfo;
+    unaryInfo.m = expandShapeOp.getSrcType().getShape()[0];
+    unaryInfo.n = expandShapeOp.getSrcType().getShape()[1];
+    auto stridesOnInput = mlir::utils::getStaticStrides(source);
+    if (failed(stridesOnInput) || stridesOnInput->back() != 1)
+      return failure();
+    unaryInfo.ldi = stridesOnInput->front();
+    auto stridesOnOutput = mlir::utils::getStaticStrides(outputs[0]->get());
+    if (failed(stridesOnOutput) || stridesOnOutput->back() != 1)
+      return failure();
+    // Ajust ldo based on the VNNI factor.
+    unaryInfo.ldo =
+        stridesOnOutput->front() /
+        *vnni::utils::getVnniBlockingFactor(outputs[0]->get().getType());
+    auto flags = rewriter.getArrayAttr(xsmm::UnaryFlagsAttr::get(
+        rewriter.getContext(), xsmm::UnaryFlags::NONE));
+    xsmm::UnaryKindAttr kind =
+        xsmm::UnaryKindAttr::get(rewriter.getContext(), xsmm::UnaryKind::VNNI2);
+    Location loc = transposeOp->getLoc();
+    IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
+    DenseI64ArrayAttr dims = DenseI64ArrayAttr::get(
+        rewriter.getContext(), ArrayRef<int64_t>{unaryInfo.m, unaryInfo.n,
+                                                 unaryInfo.ldi, unaryInfo.ldo});
+    auto dtype = xsmm::utils::getDataType(rewriter, expandShapeOp.getSrcType());
+    Value dispatched = rewriter.create<xsmm::UnaryDispatchOp>(
+        loc, integer64, kind, dims, flags, dtype);
+    SmallVector<Value> invokeOperands;
+    invokeOperands.push_back(dispatched);
+    invokeOperands.push_back(source);
+    invokeOperands.push_back(outputs[0]->get());
+
+    rewriter.create<xsmm::UnaryOp>(transposeOp.getLoc(), dtype, kind,
+                                   invokeOperands);
+
+    for (auto user : transposeOp->getUsers())
+      rewriter.eraseOp(user);
+    rewriter.eraseOp(transposeOp);
+    return success();
+  }
+};
+
 // Convert vector.contract
 // to a XSMM brgemm op.
 struct ConvertVectorContractToBatchReduceMatmul
@@ -841,7 +923,8 @@ struct ConvertVectorContractToBatchReduceMatmul
 };
 
 void populateVectorToXsmmPatterns(RewritePatternSet &patterns) {
-  patterns.add<ConvertVectorContractToBatchReduceMatmul>(patterns.getContext());
+  patterns.add<ConvertVectorContractToBatchReduceMatmul,
+               ConvertVectorTransposeToVnni2>(patterns.getContext());
 }
 
 void ConvertVectorToXsmm::runOnOperation() {
