@@ -464,6 +464,20 @@ def LoopInsertionPass: Pass<"loop-insertion-pass">{
   ];
 }
 
+def VectorTilingPass: Pass<"vector-tiling-pass">{
+  let summary = "Insert loop around vector contraction op";
+  let description = [{
+    Insert nd parallel loop around vector contraction op loop.
+  }];
+  let dependentDialects = ["scf::SCFDialect" , "vector::VectorDialect"];
+  let options = [
+    Option<"tileShapeM", "M-tile-shape", "unsigned", "0",
+               "One dimensional tile shape to reshape the first tiled input operand into (the second dimension will be computed)">,
+    Option<"tileShapeN", "N-tile-shape", "unsigned", "0",
+               "One dimensional tile shape to reshape the second tiled input operand into (the second dimension will be computed)">
+  ];
+}
+
 def LoopExpansionPass: Pass<"loop-expansion-pass">{
   let summary = "Expand brgemm parallel op";
   let description = [{
