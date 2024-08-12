@@ -59,19 +59,9 @@ static bool
 WithInputs(PatternRewriter &rewriter, Operation *op,
            SmallVector<std::function<bool(Operation *op)>> operations,
            SmallVector<OpOperand *> &inputs) {
-
-  auto scfForallOp = cast<scf::ForallOp>(op->getParentOp());
-  if (!scfForallOp)
-    return false;
-  auto region = &scfForallOp->getRegion(0);
-  if (!region->hasOneBlock())
-    return false;
-
   for (int i = 0; i < operations.size(); i++) {
     auto input = op->getOperand(i);
     if (!operations[i](input.getDefiningOp()))
-      return false;
-    if (input.getDefiningOp()->getParentOp() != scfForallOp)
       return false;
     auto dataType = xsmm::utils::getDataType(rewriter, input.getType());
     if (dataType ==
@@ -101,17 +91,10 @@ WithInputs(PatternRewriter &rewriter, Operation *op,
 static bool WithOutput(Operation *op,
                        std::function<bool(Operation *op)> operation,
                        SmallVector<OpOperand *> &output) {
-  auto scfForallOp = cast<scf::ForallOp>(op->getParentOp());
-  if (!scfForallOp)
-    return false;
-  auto region = &scfForallOp->getRegion(0);
-  if (!region->hasOneBlock())
-    return false;
-
   // Check on the inner chain of operations in the right order.
   // Make sure all operands are used and chained
   for (auto use : op->getResult(0).getUsers()) {
-    if (use != op && operation(use) && use->getParentOp() == scfForallOp) {
+    if (use != op && operation(use)) {
       assert(isa<memref::SubViewOp>(use->getOperand(1).getDefiningOp()));
       output.push_back(&use->getOpOperand(1));
       return true;
@@ -124,9 +107,9 @@ static bool WithOps(Region *region, Operation *op,
                     SmallVector<std::function<bool(Operation *op)>> operations,
                     SmallVector<Operation *> &opChain) {
   // Basic checks
-  if (!isa<scf::ForallOp>(op))
+  if (!isa<scf::ForallOp>(op) && !isa<scf::ForOp>(op) &&
+      !isa<scf::ParallelOp>(op))
     return false;
-  auto scfForallOp = cast<scf::ForallOp>(op);
   if (!region->hasOneBlock())
     return false;
   auto &block = region->front();
@@ -318,10 +301,17 @@ replaceOpWithGemmLikeOp(RewriterBase &rewriter,
     }
     invokeOperands.push_back(batchDim);
     auto brgemmOp = rewriter.create<xsmm::BrgemmOp>(loc, dtype, invokeOperands);
-    for (auto user : contractOp->getResult(0).getUsers()) {
-      rewriter.eraseOp(user);
+    if (!contractOp->use_empty()) {
+      for (auto user = contractOp->user_begin();
+           user != contractOp->user_end() && !contractOp->use_empty(); user++) {
+        auto contractUser = *user;
+        if (contractUser->use_empty()) {
+          rewriter.eraseOp(contractUser);
+        }
+      }
     }
-    rewriter.eraseOp(contractOp);
+    if (contractOp->use_empty())
+      rewriter.eraseOp(contractOp);
     return brgemmOp;
   } else {
     DenseI64ArrayAttr dims = DenseI64ArrayAttr::get(
@@ -333,10 +323,18 @@ replaceOpWithGemmLikeOp(RewriterBase &rewriter,
       invokeOperands.push_back(operand->get());
     }
     auto gemmOp = rewriter.create<xsmm::GemmOp>(loc, dtype, invokeOperands);
-    for (auto user : contractOp->getResult(0).getUsers()) {
-      rewriter.eraseOp(user);
+    if (!contractOp->use_empty()) {
+
+      for (auto user = contractOp->user_begin();
+           user != contractOp->user_end() && !contractOp->use_empty(); user++) {
+        auto contractUser = *user;
+        if (contractUser->use_empty()) {
+          rewriter.eraseOp(contractUser);
+        }
+      }
     }
-    rewriter.eraseOp(contractOp);
+    if (contractOp->use_empty())
+      rewriter.eraseOp(contractOp);
     return gemmOp;
   }
 }
@@ -771,6 +769,7 @@ struct ConvertVectorContractToBatchReduceMatmul
     SmallVector<Operation *> opChain;
     if (!WithOps(&contractOp->getParentOp()->getRegion(0),
                  contractOp->getParentOp(), operations, opChain)) {
+      std::cout << "here\n";
       return failure();
     }
     assert(opChain[0] == contractOp);
@@ -782,6 +781,7 @@ struct ConvertVectorContractToBatchReduceMatmul
     SmallVector<OpOperand *> inputs;
 
     if (!WithInputs(rewriter, contractOp, inputOperations, inputs)) {
+      std::cout << "or here\n";
       return failure();
     }
 
@@ -789,8 +789,10 @@ struct ConvertVectorContractToBatchReduceMatmul
       return failure();
     }
     auto indexingMaps = contractOp.getIndexingMaps();
-    if (indexingMaps.size() != 3)
+    if (indexingMaps.size() != 3) {
+      std::cout << "why here though\n";
       return failure();
+    }
 
     auto dataType =
         xsmm::utils::getDataType(rewriter, inputs[0]->get().getType());
@@ -799,6 +801,7 @@ struct ConvertVectorContractToBatchReduceMatmul
     if (dataType ==
         xsmm::DataTypeAttr::get(rewriter.getContext(), xsmm::DataType::BF16)) {
       if (iteratorTypes.size() != 5) {
+        std::cout << "couldnt have been here\n";
         return failure();
       }
       size_t size = iteratorTypes.size() - 1;
@@ -808,6 +811,7 @@ struct ConvertVectorContractToBatchReduceMatmul
                    vector::isReductionIterator(iteratorTypes[size - 3]) &&
                    vector::isReductionIterator(iteratorTypes[size - 4]);
       if (!match) {
+        std::cout << "not here surely\n";
         return failure();
       }
       AffineExpr r0, r1, p3, p4, r2;
@@ -822,6 +826,7 @@ struct ConvertVectorContractToBatchReduceMatmul
           infer({{r0, p3, r2, r1}, {r0, r2, p4, r1}, {p3, p4}}, rewriter);
 
       if (indexingMaps != expectedMaps) {
+        std::cout << "definitely not\n";
         return failure();
       }
       SmallVector<ArrayRef<AffineExpr>> map = {
@@ -913,9 +918,13 @@ struct ConvertVectorContractToBatchReduceMatmul
         auto brgemmInfo = isMappableToBrgemm(rewriter, contractOp, inputs,
                                              outputs, affineMaps);
         if (failed(brgemmInfo)) {
+          std::cout << "why here of course\n";
           return failure();
         }
         replaceOpWithGemmLikeOp(rewriter, contractOp, *brgemmInfo, inputs);
+      } else {
+        std::cout << "output failure\n";
+        return failure();
       }
     }
     return success();

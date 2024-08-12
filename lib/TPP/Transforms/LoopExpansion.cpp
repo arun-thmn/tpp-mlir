@@ -92,10 +92,25 @@ static LogicalResult loopExpand(scf::ForallOp op, unsigned numOuterParallel) {
   }
   // Clone instructions at the innermost loop level
   IRMapping mapping;
+  std::map<Operation *, Operation *> clonedInstrMap;
   for (auto oper = op.getBody()->getOperations().begin();
        oper != op.getBody()->getOperations().end(); oper++) {
     if (!isa<scf::InParallelOp>(oper)) {
       auto clonedInstr = rewriter.clone(*oper, mapping);
+      clonedInstrMap[&*oper] = clonedInstr;
+    } else {
+      auto nestedOperations = (dyn_cast<scf::InParallelOp>(oper));
+      for (auto nestedOper = nestedOperations.begin();
+           nestedOper != nestedOperations.end(); nestedOper++) {
+        auto clonedInstr = rewriter.clone(*nestedOper, mapping);
+        clonedInstrMap[&*nestedOper] = clonedInstr;
+      }
+    }
+  }
+  for (auto oper = op.getBody()->getOperations().begin();
+       oper != op.getBody()->getOperations().end(); oper++) {
+    if (!isa<scf::InParallelOp>(oper)) {
+      auto clonedInstr = clonedInstrMap[&*oper];
       oper->replaceAllUsesWith(clonedInstr);
       int j = 0;
       for (auto arg : clonedInstr->getOperands()) {
@@ -117,7 +132,7 @@ static LogicalResult loopExpand(scf::ForallOp op, unsigned numOuterParallel) {
       auto nestedOperations = (dyn_cast<scf::InParallelOp>(oper));
       for (auto nestedOper = nestedOperations.begin();
            nestedOper != nestedOperations.end(); nestedOper++) {
-        auto clonedInstr = rewriter.clone(*nestedOper, mapping);
+        auto clonedInstr = clonedInstrMap[&*nestedOper];
         nestedOper->replaceAllUsesWith(clonedInstr);
         int j = 0;
         for (auto arg : clonedInstr->getOperands()) {
