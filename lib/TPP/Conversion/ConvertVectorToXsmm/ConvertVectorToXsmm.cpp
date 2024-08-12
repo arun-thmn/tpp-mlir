@@ -168,7 +168,8 @@ static Operation *WithZeroInit(OpOperand *input,
       break;
     }
   }
-  assert(rootOp != nullptr);
+  if (rootOp == nullptr)
+    return nullptr;
   Value dest = rootOp->getOperands().back();
   DenseSet<Operation *> destUsers(dest.getUsers().begin(),
                                   dest.getUsers().end());
@@ -260,7 +261,7 @@ std::optional<unsigned> getPosInCodomain(unsigned dim, OpOperand *operand,
 static std::optional<Operation *>
 replaceOpWithGemmLikeOp(RewriterBase &rewriter,
                         vector::ContractionOp contractOp, BrgemmInfo brgemmInfo,
-                        SmallVector<OpOperand *> inputs) {
+                        SmallVector<OpOperand *> inputs, Operation *zeroOp) {
   OpBuilder::InsertionGuard guard(rewriter);
   auto m = brgemmInfo.m;
   auto n = brgemmInfo.n;
@@ -276,15 +277,16 @@ replaceOpWithGemmLikeOp(RewriterBase &rewriter,
       xsmm::utils::getDataType(rewriter, contractOp.getOperand(0).getType());
   IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
   Location loc = contractOp.getLoc();
-  xsmm::GemmFlagsAttr gemmFlags;
+  SmallVector<Attribute> flags;
   if (brgemmInfo.isVnni) {
-    gemmFlags = xsmm::GemmFlagsAttr::get(rewriter.getContext(),
-                                         xsmm::GemmFlags::VNNI_B);
-  } else {
-    gemmFlags =
-        xsmm::GemmFlagsAttr::get(rewriter.getContext(), xsmm::GemmFlags::NONE);
+    flags.push_back(xsmm::GemmFlagsAttr::get(rewriter.getContext(),
+                                             xsmm::GemmFlags::VNNI_B));
   }
-  auto flags = rewriter.getArrayAttr(gemmFlags);
+  if (zeroOp) {
+    flags.push_back(xsmm::GemmFlagsAttr::get(rewriter.getContext(),
+                                             xsmm::GemmFlags::BETA_0));
+  }
+  ArrayAttr brgemmFlags = rewriter.getArrayAttr(flags);
   SmallVector<Value> invokeOperands;
 
   if (batch != 0) {
@@ -292,7 +294,7 @@ replaceOpWithGemmLikeOp(RewriterBase &rewriter,
         rewriter.getContext(),
         ArrayRef<int64_t>{m, n, k, lda, ldb, ldc, strideA, strideB});
     Value dispatched = rewriter.create<xsmm::BrgemmDispatchOp>(
-        loc, integer64, dims, flags, dtype);
+        loc, integer64, dims, brgemmFlags, dtype);
     Value batchDim = rewriter.create<arith::ConstantOp>(
         loc, integer64, rewriter.getIntegerAttr(integer64, batch));
     invokeOperands.push_back(dispatched);
@@ -317,7 +319,7 @@ replaceOpWithGemmLikeOp(RewriterBase &rewriter,
     DenseI64ArrayAttr dims = DenseI64ArrayAttr::get(
         rewriter.getContext(), ArrayRef<int64_t>{m, n, k, lda, ldb, ldc});
     Value dispatched = rewriter.create<xsmm::GemmDispatchOp>(
-        loc, integer64, dims, flags, dtype);
+        loc, integer64, dims, brgemmFlags, dtype);
     invokeOperands.push_back(dispatched);
     for (auto operand : inputs) {
       invokeOperands.push_back(operand->get());
@@ -332,6 +334,9 @@ replaceOpWithGemmLikeOp(RewriterBase &rewriter,
           rewriter.eraseOp(contractUser);
         }
       }
+    }
+    if (zeroOp) {
+      rewriter.eraseOp(zeroOp);
     }
     if (contractOp->use_empty())
       rewriter.eraseOp(contractOp);
@@ -419,19 +424,36 @@ static std::optional<Operation *> replaceOpWithFusedBrgemmOp(
   invokeOperands.push_back(batchDim);
   auto brgemmOp =
       rewriter.create<xsmm::FusedBrgemmOp>(loc, dtype, invokeOperands);
-  for (auto user : unaryOp->getResult(0).getUsers()) {
-    rewriter.eraseOp(user);
+  if (!unaryOp->use_empty()) {
+    for (auto user = unaryOp->user_begin();
+         user != unaryOp->user_end() && !unaryOp->use_empty(); user++) {
+      auto use = *user;
+      rewriter.eraseOp(use);
+    }
   }
-  rewriter.eraseOp(unaryOp);
-  for (auto user : binaryOp->getResult(0).getUsers()) {
-    rewriter.eraseOp(user);
+  if (unaryOp->use_empty())
+    rewriter.eraseOp(unaryOp);
+  if (!binaryOp->use_empty()) {
+    for (auto user = binaryOp->user_begin();
+         user != binaryOp->user_end() && !binaryOp->use_empty(); user++) {
+      auto use = *user;
+      rewriter.eraseOp(use);
+    }
   }
-  rewriter.eraseOp(binaryOp);
-  for (auto user : contractOp->getResult(0).getUsers()) {
-    rewriter.eraseOp(user);
+  if (binaryOp->use_empty())
+    rewriter.eraseOp(binaryOp);
+  if (!contractOp->use_empty()) {
+    for (auto user = contractOp->user_begin();
+         user != contractOp->user_end() && !contractOp->use_empty(); user++) {
+      auto use = *user;
+      rewriter.eraseOp(use);
+    }
   }
-  rewriter.eraseOp(zeroOp);
-  rewriter.eraseOp(contractOp);
+  if (zeroOp) {
+    rewriter.eraseOp(zeroOp);
+  }
+  if (contractOp->use_empty())
+    rewriter.eraseOp(contractOp);
   return brgemmOp;
 }
 // Structural matcher.
@@ -769,7 +791,6 @@ struct ConvertVectorContractToBatchReduceMatmul
     SmallVector<Operation *> opChain;
     if (!WithOps(&contractOp->getParentOp()->getRegion(0),
                  contractOp->getParentOp(), operations, opChain)) {
-      std::cout << "here\n";
       return failure();
     }
     assert(opChain[0] == contractOp);
@@ -781,7 +802,6 @@ struct ConvertVectorContractToBatchReduceMatmul
     SmallVector<OpOperand *> inputs;
 
     if (!WithInputs(rewriter, contractOp, inputOperations, inputs)) {
-      std::cout << "or here\n";
       return failure();
     }
 
@@ -790,7 +810,6 @@ struct ConvertVectorContractToBatchReduceMatmul
     }
     auto indexingMaps = contractOp.getIndexingMaps();
     if (indexingMaps.size() != 3) {
-      std::cout << "why here though\n";
       return failure();
     }
 
@@ -801,7 +820,6 @@ struct ConvertVectorContractToBatchReduceMatmul
     if (dataType ==
         xsmm::DataTypeAttr::get(rewriter.getContext(), xsmm::DataType::BF16)) {
       if (iteratorTypes.size() != 5) {
-        std::cout << "couldnt have been here\n";
         return failure();
       }
       size_t size = iteratorTypes.size() - 1;
@@ -811,7 +829,6 @@ struct ConvertVectorContractToBatchReduceMatmul
                    vector::isReductionIterator(iteratorTypes[size - 3]) &&
                    vector::isReductionIterator(iteratorTypes[size - 4]);
       if (!match) {
-        std::cout << "not here surely\n";
         return failure();
       }
       AffineExpr r0, r1, p3, p4, r2;
@@ -826,7 +843,6 @@ struct ConvertVectorContractToBatchReduceMatmul
           infer({{r0, p3, r2, r1}, {r0, r2, p4, r1}, {p3, p4}}, rewriter);
 
       if (indexingMaps != expectedMaps) {
-        std::cout << "definitely not\n";
         return failure();
       }
       SmallVector<ArrayRef<AffineExpr>> map = {
@@ -918,12 +934,13 @@ struct ConvertVectorContractToBatchReduceMatmul
         auto brgemmInfo = isMappableToBrgemm(rewriter, contractOp, inputs,
                                              outputs, affineMaps);
         if (failed(brgemmInfo)) {
-          std::cout << "why here of course\n";
           return failure();
         }
-        replaceOpWithGemmLikeOp(rewriter, contractOp, *brgemmInfo, inputs);
+        vector::TransferWriteOp zeroOp;
+        WithZeroInit(inputs[2], zeroOp);
+        replaceOpWithGemmLikeOp(rewriter, contractOp, *brgemmInfo, inputs,
+                                zeroOp);
       } else {
-        std::cout << "output failure\n";
         return failure();
       }
     }
