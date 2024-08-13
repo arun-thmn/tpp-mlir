@@ -11,7 +11,11 @@
 
 #include "TPP/Dialect/Xsmm/XsmmEnum.h"
 #include "TPP/Dialect/Xsmm/XsmmOps.h"
+#include "TPP/IR/StructuredOpMatcher.h"
+#include "mlir/Dialect/Linalg/IR/LinalgInterfaces.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/Support/Debug.h"
 
 namespace mlir {
 class Type;
@@ -21,6 +25,26 @@ class ArrayAttr;
 class Operation;
 
 namespace xsmm {
+
+struct BrgemmInfo {
+  int64_t m;
+  int64_t n;
+  int64_t k;
+  int64_t batch;
+
+  int64_t lda;
+  int64_t ldb;
+  int64_t ldc;
+  int64_t strideA;
+  int64_t strideB;
+
+  bool isVnni = false;
+};
+
+template <typename OpTy>
+std::function<bool(Operation *op)> FuncType =
+    [](Operation *op) { return isa<OpTy>(op); };
+
 class UnaryKindAttr;
 
 struct UnaryInfo {
@@ -93,6 +117,25 @@ FailureOr<SmallVector<Attribute>> getBrgemmFlags(PatternRewriter &rewriter,
                                                  DispatchOpTy dispatchOpTy,
                                                  bool returnNone);
 
+FailureOr<BrgemmInfo> isMappableToBrgemm(PatternRewriter &rewriter,
+                                         vector::ContractionOp contractOp,
+                                         SmallVector<OpOperand *> &inputs,
+                                         SmallVector<OpOperand *> &output,
+                                         ArrayRef<AffineMap> indexingMap);
+
+bool WithInputs(PatternRewriter &rewriter, Operation *op,
+                SmallVector<std::function<bool(Operation *op)>> operations,
+                SmallVector<OpOperand *> &inputs,
+                SmallVector<Operation *> &opChain);
+bool WithOutput(Operation *op, std::function<bool(Operation *op)> operation,
+                SmallVector<OpOperand *> &output,
+                SmallVector<Operation *> &opChain);
+bool WithOps(Region *region, Operation *op,
+             SmallVector<std::function<bool(Operation *op)>> operations,
+             SmallVector<Operation *> &opChain);
+
+Operation *WithZeroInit(OpOperand *input,
+                        vector::TransferWriteOp &transferWriteOp);
 } // namespace utils
 } // namespace xsmm
 } // namespace mlir

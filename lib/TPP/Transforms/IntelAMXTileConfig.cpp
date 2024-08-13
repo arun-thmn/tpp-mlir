@@ -29,66 +29,95 @@ using namespace mlir;
 namespace mlir {
 namespace tpp {
 
-template <typename InvokeOpTy, typename DispatchOpTy>
-struct IntelAMXTileConfig : OpRewritePattern<InvokeOpTy> {
-  using OpRewritePattern<InvokeOpTy>::OpRewritePattern;
+template <typename VectorOp>
+static DenseI64ArrayAttr getDispatchInputs(PatternRewriter &rewriter,
+                                           VectorOp op, Operation *&firstOp,
+                                           Operation *&lastOp) {
+  SmallVector<std::function<bool(Operation * op)>> operations;
+  operations.push_back(xsmm::FuncType<VectorOp>);
+  SmallVector<Operation *> opChain;
+  xsmm::utils::WithOps(&op->getParentOp()->getRegion(0), op->getParentOp(),
+                       operations, opChain);
+  assert(opChain[0] == op);
 
-  LogicalResult matchAndRewrite(InvokeOpTy op,
+  SmallVector<std::function<bool(Operation * op)>> inputOperations;
+  inputOperations.push_back(xsmm::FuncType<vector::TransferReadOp>);
+  inputOperations.push_back(xsmm::FuncType<vector::TransferReadOp>);
+  inputOperations.push_back(xsmm::FuncType<vector::TransferReadOp>);
+  SmallVector<OpOperand *> inputs;
+  SmallVector<Operation *> inputChain;
+  xsmm::utils::WithInputs(rewriter, op, inputOperations, inputs, inputChain);
+  firstOp = inputChain[0];
+  SmallVector<OpOperand *> outputs;
+  SmallVector<Operation *> outputChain;
+  xsmm::utils::WithOutput(op, xsmm::FuncType<vector::TransferWriteOp>, outputs,
+                          outputChain);
+  lastOp = outputChain[0];
+  auto info = xsmm::utils::isMappableToBrgemm(rewriter, op, inputs, outputs,
+                                              op.getIndexingMapsArray());
+  auto brgemmInfo = *info;
+  auto m = brgemmInfo.m;
+  auto n = brgemmInfo.n;
+  auto k = brgemmInfo.k;
+  int64_t lda = brgemmInfo.lda;
+  int64_t ldb = brgemmInfo.ldb;
+  int64_t ldc = brgemmInfo.ldc;
+  int64_t strideA = brgemmInfo.strideA;
+  int64_t strideB = brgemmInfo.strideB;
+  DenseI64ArrayAttr dims = DenseI64ArrayAttr::get(
+      rewriter.getContext(),
+      ArrayRef<int64_t>{m, n, k, lda, ldb, ldc, strideA, strideB});
+  return dims;
+}
+
+template <typename VectorOp>
+struct IntelAMXTileConfig : OpRewritePattern<VectorOp> {
+  using OpRewritePattern<VectorOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(VectorOp op,
                                 PatternRewriter &rewriter) const override {
     if (xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()) !=
         xsmm::DataTypeAttr::get(rewriter.getContext(), xsmm::DataType::BF16))
       return failure();
-    auto flags =
-        dyn_cast<DispatchOpTy>(op.getOperand(0).getDefiningOp()).getFlags();
-    for (auto flagItr : flags)
-      if (flagItr == xsmm::GemmFlagsAttr::get(
-                         rewriter.getContext(),
-                         mlir::xsmm::GemmFlags::NO_RESET_TILECONFIG) ||
-          flagItr == xsmm::GemmFlagsAttr::get(
-                         rewriter.getContext(),
-                         mlir::xsmm::GemmFlags::NO_SETUP_TILECONFIG))
-        return failure();
-
-    auto brgemmFlags = mlir::xsmm::utils::getBrgemmFlags<DispatchOpTy>(
-        rewriter, dyn_cast<DispatchOpTy>(op.getOperand(0).getDefiningOp()),
-        false);
-    if (failed(brgemmFlags)) {
+    Operation *definingOp = &*op;
+    if (definingOp->hasAttr(xsmm::stringifyGemmFlags(
+            mlir::xsmm::GemmFlags::NO_RESET_TILECONFIG)) ||
+        definingOp->hasAttr(xsmm::stringifyGemmFlags(
+            mlir::xsmm::GemmFlags::NO_SETUP_TILECONFIG))) {
       return failure();
     }
-
-    auto attributesSetup = *brgemmFlags;
+    Operation *firstOp = nullptr, *lastOp = nullptr;
+    SmallVector<Attribute> attributesSetup;
     attributesSetup.push_back(xsmm::GemmFlagsAttr::get(
         rewriter.getContext(), xsmm::GemmFlags::NO_RESET_TILECONFIG));
+    ArrayAttr invokeFlags = rewriter.getArrayAttr(attributesSetup);
+    auto dispatchInputs = getDispatchInputs(rewriter, op, firstOp, lastOp);
+    assert(firstOp != nullptr && lastOp != nullptr);
+    rewriter.setInsertionPoint(firstOp);
     auto tileConfigSetup = rewriter.create<xsmm::IntelAMXTileConfigDispatchOp>(
         op.getLoc(), rewriter.getI64Type(),
-        DenseI64ArrayAttr::get(
-            rewriter.getContext(),
-            dyn_cast<DispatchOpTy>(op.getOperand(0).getDefiningOp())
-                .getInputs()),
-        rewriter.getArrayAttr(attributesSetup),
+        DenseI64ArrayAttr::get(rewriter.getContext(), dispatchInputs),
+        invokeFlags,
         xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()));
 
-    SmallVector<Attribute> attributesReset = *brgemmFlags;
+    SmallVector<Attribute> attributesReset;
     attributesReset.push_back(xsmm::GemmFlagsAttr::get(
         rewriter.getContext(), xsmm::GemmFlags::NO_SETUP_TILECONFIG));
+
     auto tileConfigReset = rewriter.create<xsmm::IntelAMXTileConfigDispatchOp>(
         op.getLoc(), rewriter.getI64Type(),
-        DenseI64ArrayAttr::get(
-            rewriter.getContext(),
-            dyn_cast<DispatchOpTy>(op.getOperand(0).getDefiningOp())
-                .getInputs()),
+        DenseI64ArrayAttr::get(rewriter.getContext(), dispatchInputs),
         rewriter.getArrayAttr(attributesReset),
         xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()));
 
-    SmallVector<Attribute> attributesBrgemm = *brgemmFlags;
-    attributesBrgemm.push_back(xsmm::GemmFlagsAttr::get(
-        rewriter.getContext(), xsmm::GemmFlags::NO_RESET_TILECONFIG));
-    attributesBrgemm.push_back(xsmm::GemmFlagsAttr::get(
-        rewriter.getContext(), xsmm::GemmFlags::NO_SETUP_TILECONFIG));
-
-    auto dispatch = dyn_cast<DispatchOpTy>(
-        rewriter.clone(*op.getOperand(0).getDefiningOp()));
-    dispatch.setFlagsAttr(rewriter.getArrayAttr(attributesBrgemm));
+    definingOp->setAttr(
+        xsmm::stringifyGemmFlags(xsmm::GemmFlags::NO_RESET_TILECONFIG),
+        xsmm::GemmFlagsAttr::get(rewriter.getContext(),
+                                 xsmm::GemmFlags::NO_RESET_TILECONFIG));
+    definingOp->setAttr(
+        xsmm::stringifyGemmFlags(xsmm::GemmFlags::NO_SETUP_TILECONFIG),
+        xsmm::GemmFlagsAttr::get(rewriter.getContext(),
+                                 xsmm::GemmFlags::NO_SETUP_TILECONFIG));
 
     auto alloca = rewriter.create<memref::AllocaOp>(
         op.getLoc(), MemRefType::get({64}, rewriter.getI8Type()));
@@ -97,23 +126,11 @@ struct IntelAMXTileConfig : OpRewritePattern<InvokeOpTy> {
     rewriter.create<mlir::xsmm::IntelAMXTileConfigOp>(
         op.getLoc(), tileConfigSetup, tileConfigInputs);
 
-    SmallVector<Value> invokeOperands;
-    invokeOperands.push_back(dispatch);
-    auto opItr = op->getOperands().begin();
-    std::advance(opItr, 1);
-    invokeOperands.append(opItr, op->getOperands().end());
-    rewriter.create<InvokeOpTy>(
-        op.getLoc(),
-        xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()),
-        invokeOperands);
-
+    rewriter.setInsertionPointAfter(lastOp);
     ValueRange tileResetInputs{alloca};
     rewriter.create<mlir::xsmm::IntelAMXTileConfigOp>(
         op.getLoc(), tileConfigReset, tileResetInputs);
 
-    rewriter.eraseOp(op);
-    if (op.getOperand(0).getDefiningOp()->getUsers().empty())
-      rewriter.eraseOp(op.getOperand(0).getDefiningOp());
     return success();
   }
 };
@@ -122,17 +139,17 @@ struct IntelAMXTileConfigInsertionPass
     : public impl::IntelAMXTileConfigInsertionPassBase<
           IntelAMXTileConfigInsertionPass> {
   void populateCombinePatterns(RewritePatternSet &patterns) {
-    patterns.add<IntelAMXTileConfig<xsmm::BrgemmOp, xsmm::BrgemmDispatchOp>>(
-        patterns.getContext());
-    patterns.add<
-        IntelAMXTileConfig<xsmm::FusedBrgemmOp, xsmm::FusedBrgemmDispatchOp>>(
+    patterns.add<IntelAMXTileConfig<vector::ContractionOp>>(
         patterns.getContext());
   }
 
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
     populateCombinePatterns(patterns);
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+    GreedyRewriteConfig config;
+    config.strictMode = GreedyRewriteStrictness::ExistingOps;
+    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
+                                       config);
   }
 };
 } // namespace tpp
