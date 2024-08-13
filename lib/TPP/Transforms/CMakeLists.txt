@@ -26,6 +26,7 @@ add_mlir_library(TPPTransforms
   Vectorization.cpp
   VectorContract.cpp
   VectorTiling.cpp
+  LinalgTiling.cpp
 
   ADDITIONAL_HEADER_DIRS
     ${PROJECT_SOURCE_DIR}/include/TPP

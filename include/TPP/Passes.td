@@ -35,6 +35,20 @@ def ConvertVectorToXsmm : Pass<"convert-vector-to-xsmm", "func::FuncOp"> {
 }
 
 
+def LinalgTiling : Pass<"tile-linalg"> {
+  let summary = "Tile matmul reduction dimension.";
+  let description = [{
+    Tiles matmul reduction dimension using serial loop.
+  }];
+  let dependentDialects = ["linalg::LinalgDialect",
+                           "memref::MemRefDialect",
+                           "arith::ArithDialect"];
+  let options = [
+	 ListOption<"mTileShape", "mTile", "unsigned", "Tile shape for m dim">,
+	ListOption<"nTileShape", "nTile", "unsigned", "Tile shape for n dim">,
+  ];
+}
+
 def VerifyXsmmCalls : Pass<"verify-xsmm-calls", "func::FuncOp"> {
   let summary = "Verify XSMM calls (dispatch and invoke)";
   let description = [{

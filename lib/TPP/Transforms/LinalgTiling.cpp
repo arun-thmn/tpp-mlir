@@ -14,6 +14,7 @@
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/IR/LinalgInterfaces.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
@@ -22,16 +23,15 @@
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
-#include "mlir/Transforms/RegionUtils.h"
-#include "llvm/Support/Debug.h"
-#include <iostream>
-#include <list>
-
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Passes.h"
-
-
-
+#include "mlir/Transforms/RegionUtils.h"
+#include "llvm/ADT/SetOperations.h"
+#include "llvm/Support/Debug.h"
+#include <algorithm>
+#include <iostream>
+#include <list>
+#include <set>
 #define DEBUG_TYPE "linalg-tiling"
 
 namespace mlir {
@@ -49,89 +49,155 @@ using namespace std;
 namespace mlir {
 namespace tpp {
 
-//	namespace {
+namespace {
+auto par = utils::IteratorType::parallel;
+auto red = utils::IteratorType::reduction;
+} // namespace
 
-template <typename LinalgOp>
-struct LinalgOpTiling : public OpRewritePattern<LinalgOp> {
-  using OpRewritePattern<LinalgOp>::OpRewritePattern;
-
-  LinalgOpTiling(MLIRContext *ctx, LinalgTilingOptions tilingoptions)
-      : OpRewritePattern<LinalgOp>(ctx), options(tilingoptions) {}
-
-  LogicalResult matchAndRewrite(LinalgOp linalgOp,
-                                PatternRewriter &rewriter) const override {
-
-  auto tileShapeM = options.mTileShape;
-  auto tileShapeN = options.nTileShape;
-
-  SmallVector<ArrayRef<unsigned int>> tiles = {tileShapeM, tileShapeN};
-
-  rewriter.setInsertionPointToStart(linalgOp.getBody());
-    SmallVector<SmallVector<int64_t>> tileQuotient;
-     auto contractionDim = inferContractionDims(linalgOp);
-                 auto reductionDim = contractionDim->k.front();
-    for (size_t i = 0; i < linalgOp.getNumOperands(); i++) {
-	SmallVector<int64_t> indecies;
-	
-      auto input = linalgOp.getOperand(i);
-          auto operandType = input.getType();
-          SmallVector<int64_t> shape;
-          size_t index = 0;
-          for (size_t j = 0;
-               j < dyn_cast<ShapedType>(operandType).getShape().size(); j++) {
-		  if (dyn_cast<ShapedType>(operandType).getShape()[j] == reductionDim) {
-                                indecies.push_back(1);
-		  }
-
-  		for (size_t k = 0; k < tiles[i].size(); k++) {
-			indecies.push_back(dyn_cast<ShapedType>(operandType).getShape()[j]/tiles[i][k]);
-			break;
-		}
-		linalgOp.setOperand(i, MemRefType::get(ArrayRef(indecies),rewriter.getIndexType()));
-		tileQuotient.push_back(indecies);
-	  }
+static llvm::SmallDenseSet<int64_t>
+findPermutationsIndexingOperand(AffineMap indexingMap,
+                                ArrayRef<utils::IteratorType> iterators,
+                                utils::IteratorType iter) {
+  assert(iterators.size() == indexingMap.getNumDims());
+  llvm::SmallDenseSet<int64_t> res;
+  for (AffineExpr e : indexingMap.getResults()) {
+    if (auto d = dyn_cast<AffineDimExpr>(e)) {
+      if (iterators[d.getPosition()] == iter &&
+          llvm::count_if(indexingMap.getResults(), [d](AffineExpr e) {
+            return e.isFunctionOfDim(d.getPosition());
+          }) == 1)
+        res.insert(d.getPosition());
     }
-	llvm::SmallDenseSet<int64_t> intersection;
-	for (size_t i = 0; i < linalgOp.getNumOperands(); i++) {
-		auto parPerm = findPermutationsIndexingOperand(linalgOp.getIndexingMapsArray()[i], linalgOp.getIterators(), par);
-		auto redPerm = findPermutationsIndexingOperand(linalgOp.getIndexingMapsArray()[i], linalgOp.getIterators(), red);
-		auto unionPerm = set_union(parPerm, redPerm);
-		if (i == 0) {
-			intersection = unionPerm;
-		}
-			else {
-		intersection = set_intersection(intersection, unionPerm);
-			}
-	}
-	return success();
   }
-
-	private:
-  	LinalgTilingOptions options;
-};
-
-
-void populateLinalgTilingPatterns(RewritePatternSet &patterns,
-                                 LinalgTilingOptions options) {
-  patterns.add<LinalgOpTiling>(
-      patterns.getContext(), options);
+  return res;
 }
 
+//	namespace {
 
-struct LinalgTiling
-    : public tpp::impl::LinalgTilingBase<LinalgTiling> {
+// template <typename LinalgOp>
+
+struct LinalgOpTiling : OpRewritePattern<linalg::GenericOp> {
+  using OpRewritePattern<linalg::GenericOp>::OpRewritePattern;
+
+  LinalgOpTiling(MLIRContext *ctx, LinalgTilingOptions tilingoptions)
+      : OpRewritePattern(ctx), options(tilingoptions) {}
+
+  LogicalResult matchAndRewrite(linalg::GenericOp linalgOp,
+                                PatternRewriter &rewriter) const override {
+
+    static list<linalg::GenericOp> visited;
+    if(std::find(visited.begin(), visited.end(), linalgOp)!=visited.end())
+	return failure();
+    visited.push_back(linalgOp);    
+    std::vector<int64_t>  tileShapeM(options.mTileShape.begin(), options.mTileShape.end());
+    std::vector<int64_t>  tileShapeN(options.nTileShape.begin(), options.nTileShape.end());
+    std::vector<int64_t> finaltile(3);
+
+    std::set_union(tileShapeM.begin(), tileShapeM.end(), tileShapeN.begin(),tileShapeN.end(), finaltile.begin());
+    SmallVector<int64_t> boundariesOne(1, tileShapeM.size()-1, finaltile.size()-1);
+    SmallVector<int64_t> boundariesTwo(1, finaltile.size()-1, finaltile.size()-1);
+
+    rewriter.setInsertionPointToStart(linalgOp->getParentOp()->getBlock());
+    int i = 0;
+    SmallVector<SmallVector<Value>> inductionVars(finaltile.size(), finaltile.size());
+    for (auto itrShapeM  = finaltile.begin() ; itrShapeM != finaltile.end(); itrShapeM++, i++) {
+	    int index = i/boundariesOne[i];
+    	    int offset = i/(finaltile.size()-1);
+    	    auto upperBound = dyn_cast<MemRefType>(linalgOp.getOperand(index).getType()).getShape()[offset];	     
+	    Location loc = linalgOp.getLoc();
+	     Value zeroCst = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+	     Value ubCst = rewriter.create<arith::ConstantIndexOp>(loc,upperBound);
+    Value stepCst = rewriter.create<arith::ConstantIndexOp>(loc, *itrShapeM);
+	    scf::ForOp loopOp =
+        rewriter.create<scf::ForOp>(linalgOp.getLoc(), zeroCst, ubCst, stepCst);
+	     rewriter.setInsertionPointToStart(loopOp.getBody());
+
+    	inductionVars[index, offset]= inductionVars[offset, index] = loopOp.getInductionVar();
+    }
+
+    SmallVector<ArrayRef<unsigned int>> tiles = {tileShapeM, tileShapeN};
+
+    rewriter.setInsertionPointToStart(linalgOp.getBody());
+    auto contractionDim = inferContractionDims(linalgOp);
+    auto reductionDim = contractionDim->k.front();
+    SmallVector<SmallVector<<int64_t>> tileshapes(tileShapeM, tileShapeN, finaltile);
+    for (size_t i = 0; i < linalgOp.getNumOperands(); i++) {
+      SmallVector<int64_t> indecies;
+
+      auto input = linalgOp.getOperand(i);
+      auto operandType = input.getType();
+      SmallVector<int64_t> shape;
+      size_t index = 0;
+      SmallVector<OpFoldResult> offsets;
+
+      for (size_t j = 0;
+           j < dyn_cast<ShapedType>(operandType).getShape().size(); j++) {
+        if (dyn_cast<ShapedType>(operandType).getShape()[j] == reductionDim) {
+          indecies.push_back(1);
+        }
+
+        for (size_t k = 0; k < tiles[i].size(); k++) {
+          indecies.push_back(dyn_cast<ShapedType>(operandType).getShape()[j] /
+                             tiles[i][k]);
+          auto index = dyn_cast<ShapedType>(operandType).getShape().size()-j;
+	  offsets.push_back(inductionVar[index][k]);
+     	  break;
+        }
+	
+ auto subviewType = MemRefType::get(
+      {indecies}, dyn_cast<MemRefType>(OperandType).getElementType());
+
+ auto [strides, offset] = getStridesAndOffset(subviewType);
+  
+  auto subview = rewriter.create<memref::SubViewOp>(
+      op.getLoc(), dyn_cast<MemRefType>(subviewType),input,
+      offsets, tileshapes[i], strides);
+	linalgOp.setOperand(i, subview);
+      }
+    }
+/*    llvm::SmallDenseSet<int64_t> intersection;
+    for (size_t i = 0; i < linalgOp.getNumOperands(); i++) {
+      auto parPerm = findPermutationsIndexingOperand(
+          linalgOp.getIndexingMapsArray()[i], linalgOp.getIteratorTypesArray(),
+          par);
+      auto redPerm = findPermutationsIndexingOperand(
+          linalgOp.getIndexingMapsArray()[i], linalgOp.getIteratorTypesArray(),
+          red);
+      llvm::set_union(parPerm, redPerm);
+      if (i == 0) {
+        intersection = parPerm;
+      } else {
+        llvm::set_intersect(intersection, parPerm);
+      }
+    }
+
+     auto intersectSorted = llvm::sort(intersection.begin(), intersection.end());
+*/
+    return success();
+  }
+
+private:
+  LinalgTilingOptions options;
+};
+
+void populateLinalgTilingPatterns(RewritePatternSet &patterns,
+                                  LinalgTilingOptions options) {
+  patterns.add<LinalgOpTiling>(patterns.getContext(), options);
+}
+
+struct LinalgTiling : public tpp::impl::LinalgTilingBase<LinalgTiling> {
 
   using LinalgTilingBase::LinalgTilingBase;
 
   void runOnOperation() override {
     LinalgTilingOptions options{mTileShape, nTileShape};
     RewritePatternSet patterns(&getContext());
-     populateLinalgTilingPatterns(patterns, options);
-    //GreedyRewriteConfig config;
-    //config.strictMode = GreedyRewriteStrictness::ExistingOps;
+    populateLinalgTilingPatterns(patterns, options);
+    // GreedyRewriteConfig config;
+    // config.strictMode = GreedyRewriteStrictness::ExistingOps;
     (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
 
-    //auto *parentOp = getOperation();
+    // auto *parentOp = getOperation();
     /* SmallVector<ForallOp> innermostForAllloops;
     getInnermostForLoops(parentOp, innermostForAllloops);
     for (ForallOp loop : innermostForAllloops)
