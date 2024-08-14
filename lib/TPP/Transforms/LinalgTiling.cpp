@@ -10,11 +10,13 @@
 //
 //===----------------------------------------------------------------------===//
 #include "TPP/IR/TilingUtils.h"
+#include "TPP/Transforms/Transforms.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/IR/LinalgInterfaces.h"
+#include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
@@ -60,11 +62,6 @@ struct LinalgOpTiling : OpRewritePattern<linalg::GenericOp> {
 
   LogicalResult matchAndRewrite(linalg::GenericOp linalgOp,
                                 PatternRewriter &rewriter) const override {
-
-    static list<linalg::GenericOp> visited;
-    if (std::find(visited.begin(), visited.end(), linalgOp) != visited.end())
-      return failure();
-    visited.push_back(linalgOp);
     std::vector<int64_t> tileShapeM(options.mTileShape.begin(),
                                     options.mTileShape.end());
     std::vector<int64_t> tileShapeN(options.nTileShape.begin(),
@@ -73,15 +70,47 @@ struct LinalgOpTiling : OpRewritePattern<linalg::GenericOp> {
 
     std::set_union(tileShapeM.begin(), tileShapeM.end(), tileShapeN.begin(),
                    tileShapeN.end(), finaltile.begin());
+
+    std::vector<int64_t> resulttileOne(1);
+    std::set_difference(tileShapeM.begin(), tileShapeM.end(),
+                        tileShapeN.begin(), tileShapeN.end(),
+                        resulttileOne.begin());
+
+    std::vector<int64_t> resulttileTwo(1);
+    std::set_difference(tileShapeN.begin(), tileShapeN.end(),
+                        tileShapeM.begin(), tileShapeM.end(),
+                        resulttileTwo.begin());
+
+    std::vector<int64_t> resulttile(2);
+    std::set_union(resulttileOne.begin(), resulttileOne.end(),
+                   resulttileTwo.begin(), resulttileTwo.end(),
+                   resulttile.begin());
+
     SmallVector<int64_t> boundariesOne{1,
                                        static_cast<long>(tileShapeM.size() - 1),
                                        static_cast<long>(finaltile.size() - 1)};
 
-    SmallVector<std::vector<int64_t>> tileshapes{tileShapeM, tileShapeN,
-                                                 finaltile};
-    rewriter.setInsertionPointToStart(linalgOp->getParentOp()->getBlock());
+    SmallVector<int64_t> tileSizesIndex{static_cast<long>(tileShapeM.size()),
+                                        static_cast<long>(tileShapeN.size()),
+                                        static_cast<long>(resulttile.size())};
+    std::vector<int64_t> tempTileM(tileShapeM.begin(), tileShapeM.end());
+    std::vector<int64_t> tempTileN(tileShapeN.begin(), tileShapeN.end());
+    SmallVector<std::vector<int64_t>> tileshapes{tempTileM, tempTileN,
+                                                 resulttile};
+    //    bool alreadyTiled = true;
+    //    auto output = linalgOp.getResult();
+    //    auto operandType = output.getType();
+    //    auto memrefTypeShape = dyn_cast<MemRefType>(operandType).getShape();
+    //    for(int i = 0; i< tileshapes[2].size();i++){
+    //
+    //    }
+    //    if (alreadyTiled)
+    //      return failure();
+
+    rewriter.setInsertionPoint(linalgOp);
     int i = 0;
     map<int, map<int, Value>> inductionVars;
+    scf::ForOp innermostForLoop;
     for (auto itrShapeM = finaltile.begin(); itrShapeM != finaltile.end();
          itrShapeM++, i++) {
       int index = i / boundariesOne[i];
@@ -90,11 +119,12 @@ struct LinalgOpTiling : OpRewritePattern<linalg::GenericOp> {
           dyn_cast<MemRefType>(linalgOp.getOperand(index).getType())
               .getShape()
               .size();
-      int effectiveOffset = operandSize - tileshapes[index].size() + offset;
+      int effectiveOffset = operandSize - tileSizesIndex[index] + offset;
+
       auto upperBound =
           dyn_cast<MemRefType>(linalgOp.getOperand(index).getType())
               .getShape()[effectiveOffset];
-      std::cout << "i:" << i << "upperBound:" << upperBound << "\n";
+
       Location loc = linalgOp.getLoc();
       Value zeroCst = rewriter.create<arith::ConstantIndexOp>(loc, 0);
       Value ubCst = rewriter.create<arith::ConstantIndexOp>(loc, upperBound);
@@ -107,67 +137,82 @@ struct LinalgOpTiling : OpRewritePattern<linalg::GenericOp> {
           dyn_cast<MemRefType>(linalgOp.getOperand(indexTwo).getType())
               .getShape()
               .size();
-      int effectiveOffsetTwo =
-          operandSizeTwo - tileshapes[indexTwo].size() + index;
-
-      std::cout << "updated inductionvars:" << index << "," << effectiveOffset
-                << " and " << indexTwo << "," << effectiveOffsetTwo << "\n";
+      int effectiveOffsetTwo = operandSizeTwo - tileSizesIndex[index] + index;
 
       inductionVars[index][effectiveOffset] = loopOp.getInductionVar();
 
       inductionVars[indexTwo][effectiveOffsetTwo] = loopOp.getInductionVar();
+
+      int indexThree = resulttile.size();
+      int effectiveOffsetThree =
+          index +
+          dyn_cast<MemRefType>(linalgOp.getOperand(indexThree).getType())
+              .getShape()
+              .size() -
+          tileSizesIndex[indexThree];
+      inductionVars[indexThree][effectiveOffsetThree] =
+          loopOp.getInductionVar();
+      innermostForLoop = loopOp;
     }
 
     SmallVector<std::vector<int64_t>> tiles = {tileShapeM, tileShapeN};
 
-    rewriter.setInsertionPointToStart(linalgOp.getBody());
     auto contractionDim = inferContractionDims(linalgOp);
+    //    auto loops =
+    //    computeStaticLoopSizes(dyn_cast<linalg::LinalgOp>(linalgOp),
+    //    linalgOp.getIndexingMapsArray());
     auto reductionDim = contractionDim->k.front();
-    std::cout << "reduction dim:" << reductionDim << "\n";
+
     for (size_t i = 0; i < linalgOp.getNumOperands(); i++) {
       SmallVector<int64_t> indices;
 
       auto input = linalgOp.getOperand(i);
       auto operandType = input.getType();
-      SmallVector<int64_t> shape;
       SmallVector<OpFoldResult> offsets;
+      size_t k = 0;
+      auto tileItr = tileshapes[i].begin();
+      auto tensorShape = dyn_cast<MemRefType>(operandType).getShape();
+      //        assert(loops[reductionDim] ==
+      //        dyn_cast<MemRefType>(operandType).getShape()[j]);
 
-      for (size_t j = 0;
-           j < dyn_cast<ShapedType>(operandType).getShape().size(); j++) {
-        if (dyn_cast<ShapedType>(operandType).getShape()[j] == reductionDim) {
-          indices.push_back(1);
+      // indices[reductionDim] = 1;
+      SmallVector<OpFoldResult> shape;
+      SmallVector<OpFoldResult> strides;
+      for (size_t j = 0; j < tensorShape.size(); j++) {
+        if (j < tensorShape.size() - tileSizesIndex[i]) {
+          offsets.push_back(rewriter.getIndexAttr(0));
+          indices.push_back(tensorShape[j]);
+          shape.push_back(rewriter.getIndexAttr(tensorShape[j]));
+          strides.push_back(rewriter.getIndexAttr(1));
+        } else {
+          shape.push_back(rewriter.getIndexAttr(tensorShape[j] / (*tileItr)));
+          indices.push_back(tensorShape[j] / (*tileItr));
+          strides.push_back(rewriter.getIndexAttr(1));
+          offsets.push_back(
+              inductionVars[i][tensorShape.size() - tileSizesIndex[i] + k]);
+          k++;
+          tileItr++;
         }
-
-        for (size_t k = 0; k < tiles[i].size(); k++) {
-          indices.push_back(dyn_cast<ShapedType>(operandType).getShape()[j] /
-                            tiles[i][k]);
-          auto index = dyn_cast<ShapedType>(operandType).getShape().size() - j;
-          offsets.push_back(inductionVars[index][k]);
-          break;
-        }
-
-        auto subviewType = MemRefType::get(
-            {indices}, dyn_cast<MemRefType>(operandType).getElementType());
-
-        auto [staticStrides, staticOffset] = getStridesAndOffset(subviewType);
-
-        auto newSubviewType = MemRefType::get(
-            {indices}, dyn_cast<MemRefType>(operandType).getElementType(),
-            StridedLayoutAttr::get(rewriter.getContext(), ShapedType::kDynamic,
-                                   staticStrides));
-
-        SmallVector<OpFoldResult> strides(indices.size(),
-                                          rewriter.getIndexAttr(1));
-
-        SmallVector<OpFoldResult> shape;
-        for (size_t k = 0; k < tileshapes[i].size(); k++)
-          shape.push_back(rewriter.getIndexAttr(tileshapes[i][k]));
-        auto subview = rewriter.create<memref::SubViewOp>(
-            linalgOp.getLoc(), dyn_cast<MemRefType>(newSubviewType), input,
-            offsets, shape, strides);
-        linalgOp.setOperand(i, subview);
       }
+
+      auto subviewType = MemRefType::get(
+          {indices}, dyn_cast<MemRefType>(operandType).getElementType());
+      auto [staticStrides, staticOffset] = getStridesAndOffset(subviewType);
+      auto newSubviewType = MemRefType::get(
+          {indices}, dyn_cast<MemRefType>(operandType).getElementType(),
+          StridedLayoutAttr::get(rewriter.getContext(), ShapedType::kDynamic,
+                                 staticStrides));
+      auto subview = rewriter.create<memref::SubViewOp>(
+          linalgOp.getLoc(), nullptr /*dyn_cast<MemRefType>(newSubviewType)*/,
+          input, offsets, shape, strides);
+      linalgOp.setOperand(i, subview);
     }
+    rewriter.setInsertionPoint(innermostForLoop.getBody(),
+                               std::prev(innermostForLoop.getBody()->end(), 1));
+    auto clone = rewriter.clone(*linalgOp);
+    linalgOp.replaceAllUsesWith(clone);
+    if (linalgOp->use_empty())
+      rewriter.eraseOp(linalgOp);
     return success();
   }
 
@@ -188,7 +233,11 @@ struct LinalgTiling : public tpp::impl::LinalgTilingBase<LinalgTiling> {
     LinalgTilingOptions options{mTileShape, nTileShape};
     RewritePatternSet patterns(&getContext());
     populateLinalgTilingPatterns(patterns, options);
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+    GreedyRewriteConfig config;
+    config.strictMode = GreedyRewriteStrictness::ExistingOps;
+
+    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
+                                       config);
   }
 };
 } // namespace tpp
