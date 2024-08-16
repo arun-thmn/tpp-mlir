@@ -102,43 +102,38 @@ private:
         pm.addNestedPass<func::FuncOp>(createVectorizationPass());
         pm.addNestedPass<func::FuncOp>(createVectorContractPass());
         pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
+        // Low level parallelization passes.
+        if (tileShapeM != 0 && tileShapeN != 0) {
+          LowLevelParallelizationOptions LowLevelParallelization(
+              LowLevelParallelizationOptions{tileShapeM, tileShapeN,
+                                             shuffleOrder, outerParallelLoops});
+          pm.addPass(createLowLevelParallelization(LowLevelParallelization));
+        }
         if (vectorToXsmm) {
+          // Convert forAll to parallel loops should run after bufferization
+          // as scf.parallel does not handle tensor.
+          pm.addPass(createConvertForAllToParallelOp());
+          pm.addNestedPass<func::FuncOp>(
+              createIntelAMXTileConfigInsertionPass());
+          pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
+          pm.addNestedPass<func::FuncOp>(createLoopInvariantCodeMotionPass());
+          pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
+          pm.addNestedPass<func::FuncOp>(
+              createIntelAMXTileConfigHoistingPass());
           pm.addNestedPass<func::FuncOp>(createConvertVectorToXsmm());
           pm.addNestedPass<func::FuncOp>(createLoopInvariantCodeMotionPass());
+          // Covert all local TPP-related dialects.
+          pm.addPass(createLocalDialectsLowering());
+
+          // Clean up after the default pipeline.
+          pm.addNestedPass<func::FuncOp>(createPostprocessing());
         }
-        pm.addNestedPass<func::FuncOp>(createConvertVectorToSCFPass());
       } else {
         // Lower all Tile operations.
         pm.addNestedPass<func::FuncOp>(createLinalgLowering());
       }
       pm.addPass(createCleanup());
     }
-    // Low level parallelization passes.
-    if (tileShapeM != 0 && tileShapeN != 0) {
-      LowLevelParallelizationOptions LowLevelParallelization(
-          LowLevelParallelizationOptions{tileShapeM, tileShapeN, shuffleOrder,
-                                         outerParallelLoops});
-      pm.addPass(createLowLevelParallelization(LowLevelParallelization));
-    }
-    // Convert forAll to parallel loops should run after bufferization
-    // as scf.parallel does not handle tensor.
-    pm.addPass(createConvertForAllToParallelOp());
-    // TODO: Fusion and AMX passes need to be in a new bundle
-    pm.addPass(createCombineXsmmOpPass());
-    pm.addNestedPass<func::FuncOp>(createLoopInvariantCodeMotionPass());
-    pm.addPass(createFoldXsmmFlags());
-    pm.addPass(createVerifyXsmmCalls());
-    pm.addNestedPass<func::FuncOp>(createIntelAMXTileConfigInsertionPass());
-    pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
-    pm.addNestedPass<func::FuncOp>(createLoopInvariantCodeMotionPass());
-    pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
-    pm.addNestedPass<func::FuncOp>(createIntelAMXTileConfigHoistingPass());
-
-    // Covert all local TPP-related dialects.
-    pm.addPass(createLocalDialectsLowering());
-
-    // Clean up after the default pipeline.
-    pm.addNestedPass<func::FuncOp>(createPostprocessing());
   }
 };
 

@@ -62,10 +62,10 @@ private:
     // that they are hoisted out of loops.
     pm.addPass(createCleanup());
 
-    mlir::tpp::LoopInsertionPassOptions loopInsertionPassOptions;
-    loopInsertionPassOptions.tileShapeM = tileShapeM;
-    loopInsertionPassOptions.tileShapeN = tileShapeN;
-    pm.addPass(createLoopInsertionPass(loopInsertionPassOptions));
+    mlir::tpp::VectorTilingPassOptions vectorTilingPassOptions;
+    vectorTilingPassOptions.tileShapeM = tileShapeM;
+    vectorTilingPassOptions.tileShapeN = tileShapeN;
+    pm.addPass(createVectorTilingPass(vectorTilingPassOptions));
 
     // FIXME:This pass must run before the expansion pass because it shuffles
     // the order of forall loops only
