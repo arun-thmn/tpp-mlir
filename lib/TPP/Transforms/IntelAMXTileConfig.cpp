@@ -17,12 +17,14 @@
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/Support/Debug.h"
 namespace mlir {
 namespace tpp {
 #define GEN_PASS_DEF_INTELAMXTILECONFIGINSERTIONPASS
 #include "TPP/Passes.h.inc"
 } // namespace tpp
 } // namespace mlir
+#define DEBUG_TYPE "intel_amx_tile_insertion"
 
 using namespace mlir;
 
@@ -155,6 +157,7 @@ struct IntelAMXTileConfig : OpRewritePattern<VectorOp> {
             mlir::xsmm::GemmFlags::NO_RESET_TILECONFIG)) ||
         definingOp->hasAttr(xsmm::stringifyGemmFlags(
             mlir::xsmm::GemmFlags::NO_SETUP_TILECONFIG))) {
+      LLVM_DEBUG(llvm::dbgs() << "TileConfig previously inserted\n");
       return failure();
     }
     SmallVector<Attribute> attributesSetup;
