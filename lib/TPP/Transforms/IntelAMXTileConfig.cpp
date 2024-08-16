@@ -33,6 +33,7 @@ template <typename VectorOp>
 static DenseI64ArrayAttr getDispatchInputs(PatternRewriter &rewriter,
                                            VectorOp op, Operation *&firstOp,
                                            Operation *&lastOp) {
+  FailureOr<xsmm::BrgemmInfo> info;
   SmallVector<std::function<bool(Operation * op)>> operations;
   operations.push_back(xsmm::FuncType<VectorOp>);
   SmallVector<Operation *> opChain;
@@ -45,16 +46,86 @@ static DenseI64ArrayAttr getDispatchInputs(PatternRewriter &rewriter,
   inputOperations.push_back(xsmm::FuncType<vector::TransferReadOp>);
   inputOperations.push_back(xsmm::FuncType<vector::TransferReadOp>);
   SmallVector<OpOperand *> inputs;
-  SmallVector<Operation *> inputChain;
-  xsmm::utils::WithInputs(rewriter, op, inputOperations, inputs, inputChain);
-  firstOp = inputChain[0];
-  SmallVector<OpOperand *> outputs;
-  SmallVector<Operation *> outputChain;
-  xsmm::utils::WithOutput(op, xsmm::FuncType<vector::TransferWriteOp>, outputs,
-                          outputChain);
-  lastOp = outputChain[0];
-  auto info = xsmm::utils::isMappableToBrgemm(rewriter, op, inputs, outputs,
-                                              op.getIndexingMapsArray());
+  SmallVector<Operation *> inputOpChain;
+  xsmm::utils::WithInputs(rewriter, op, inputOperations, inputs, inputOpChain);
+  operations.clear();
+  operations.push_back(xsmm::FuncType<arith::AddFOp>);
+  opChain.clear();
+  if (xsmm::utils::WithOps(&op->getParentOp()->getRegion(0), op->getParentOp(),
+                           operations, opChain)) {
+    auto biasAdd = opChain[0];
+    assert(isa<arith::AddFOp>(biasAdd));
+    SmallVector<std::function<bool(Operation * op)>> inputOperations;
+    inputOperations.push_back(xsmm::FuncType<vector::BroadcastOp>);
+    inputOperations.push_back(xsmm::FuncType<vector::TransferReadOp>);
+    SmallVector<OpOperand *> addInputs;
+    SmallVector<Operation *> addOpChain;
+    if (xsmm::utils::WithInputs(rewriter, biasAdd, inputOperations, addInputs,
+                                addOpChain)) {
+      SmallVector<OpOperand *> addOutputs;
+      SmallVector<Operation *> addOutputChain;
+      if (xsmm::utils::WithOutput(biasAdd,
+                                  xsmm::FuncType<vector::TransferWriteOp>,
+                                  addOutputs, addOutputChain)) {
+        operations.clear();
+        operations.push_back(xsmm::FuncType<arith::MaximumFOp>);
+        opChain.clear();
+        if (xsmm::utils::WithOps(&op->getParentOp()->getRegion(0),
+                                 op->getParentOp(), operations, opChain)) {
+          auto maxF = opChain[0];
+          assert(isa<arith::MaximumFOp>(maxF));
+          SmallVector<OpOperand *> maxfInputs;
+          SmallVector<std::function<bool(Operation * op)>> maxFOperations;
+          maxFOperations.push_back(xsmm::FuncType<vector::TransferReadOp>);
+          SmallVector<Operation *> maxfOpChain;
+          if (xsmm::utils::WithInputs(rewriter, maxF, maxFOperations,
+                                      maxfInputs, maxfOpChain)) {
+            SmallVector<OpOperand *> maxfOutputs;
+            SmallVector<Operation *> maxfOutputChain;
+            if (xsmm::utils::WithOutput(maxF,
+                                        xsmm::FuncType<vector::TransferWriteOp>,
+                                        maxfOutputs, maxfOutputChain)) {
+              SmallVector<Operation *> contractOutputChain;
+              SmallVector<OpOperand *> outputs;
+              if (xsmm::utils::WithOutput(
+                      op, xsmm::FuncType<vector::TransferWriteOp>, outputs,
+                      contractOutputChain)) {
+                info = xsmm::utils::isMappableToBrgemm(
+                    rewriter, op, inputs, outputs, op.getIndexingMapsArray());
+                vector::TransferWriteOp zeroOp;
+                xsmm::utils::WithZeroInit(inputs[2], zeroOp);
+                if (zeroOp) {
+                  firstOp = zeroOp;
+                } else {
+                  firstOp = inputOpChain[0];
+                }
+
+                lastOp = maxfOutputChain[0];
+              }
+            }
+          }
+        }
+      }
+    }
+  } else {
+    SmallVector<OpOperand *> outputs;
+    SmallVector<Operation *> outputChain;
+    if (xsmm::utils::WithOutput(op, xsmm::FuncType<vector::TransferWriteOp>,
+                                outputs, outputChain)) {
+
+      vector::TransferWriteOp zeroOp;
+      xsmm::utils::WithZeroInit(inputs[2], zeroOp);
+      info = xsmm::utils::isMappableToBrgemm(rewriter, op, inputs, outputs,
+                                             op.getIndexingMapsArray());
+      if (zeroOp) {
+        firstOp = zeroOp;
+      } else {
+        firstOp = inputOpChain[0];
+      }
+      lastOp = outputChain[0];
+    }
+  }
+
   auto brgemmInfo = *info;
   auto m = brgemmInfo.m;
   auto n = brgemmInfo.n;
@@ -86,11 +157,11 @@ struct IntelAMXTileConfig : OpRewritePattern<VectorOp> {
             mlir::xsmm::GemmFlags::NO_SETUP_TILECONFIG))) {
       return failure();
     }
-    Operation *firstOp = nullptr, *lastOp = nullptr;
     SmallVector<Attribute> attributesSetup;
     attributesSetup.push_back(xsmm::GemmFlagsAttr::get(
         rewriter.getContext(), xsmm::GemmFlags::NO_RESET_TILECONFIG));
     ArrayAttr invokeFlags = rewriter.getArrayAttr(attributesSetup);
+    Operation *firstOp = nullptr, *lastOp = nullptr;
     auto dispatchInputs = getDispatchInputs(rewriter, op, firstOp, lastOp);
     assert(firstOp != nullptr && lastOp != nullptr);
     rewriter.setInsertionPoint(firstOp);
