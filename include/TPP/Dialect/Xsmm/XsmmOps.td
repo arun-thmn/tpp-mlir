@@ -245,7 +245,7 @@ class Xsmm_GemmLikeOp<string mnemonic, list<Trait> traits = []> :
     ConfinedAttr<DenseI64ArrayAttr,
                 [DenseArrayNonNegative<DenseI64ArrayAttr>]>:$inputs,
     TypedArrayAttrBase<Xsmm_GemmFlags, "gemm flags">:$flags,
-    Xsmm_DataType:$data_type);
+    Xsmm_DataType:$data_type, OptionalAttr<Xsmm_DataType>:$comp_type);
 
   let results = (outs I64:$results);
   let hasCustomAssemblyFormat = 1;

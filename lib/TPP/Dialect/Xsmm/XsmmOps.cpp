@@ -58,10 +58,15 @@ static ParseResult parseDataTypeImpl(OpAsmParser &parser,
   if (parser.parseKeyword(DATA_TYPE) || parser.parseEqual())
     return failure();
   DataType dataType;
+  DataType compType;
   if (parseEnum(dataType, parser))
+    return failure();
+  if (parseEnum(compType, parser))
     return failure();
   result.addAttribute(DATA_TYPE,
                       DataTypeAttr::get(builder.getContext(), dataType));
+  result.addAttribute(DATA_TYPE,
+                      DataTypeAttr::get(builder.getContext(), compType));
   result.addTypes(builder.getIntegerType(64));
 
   // Parse the optional attribute list
