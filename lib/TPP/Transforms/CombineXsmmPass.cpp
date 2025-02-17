@@ -73,7 +73,12 @@ struct CombineXsmmOp : public OpRewritePattern<xsmm::BrgemmOp> {
     }
     // Now, replace the ops with a fused BRGEMM
     auto dtype =
+        xsmm::utils::getDataType(rewriter, brgemmOp.getOperand(0).getType());
+    auto btype =
         xsmm::utils::getDataType(rewriter, brgemmOp.getOperand(1).getType());
+    auto ctype =
+        xsmm::utils::getDataType(rewriter, brgemmOp.getOperand(2).getType());
+
     IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
 
     Location loc = brgemmOp.getLoc();
@@ -110,7 +115,7 @@ struct CombineXsmmOp : public OpRewritePattern<xsmm::BrgemmOp> {
             rewriter.getContext(), xsmm::UnaryFlags::NONE)),
         rewriter.getArrayAttr(
             xsmm::BinaryFlagsAttr::get(rewriter.getContext(), *binaryFlags)),
-        dtype);
+        dtype, btype, ctype);
 
     Value batchDim = rewriter.create<arith::ConstantOp>(
         loc, integer64, rewriter.getIntegerAttr(integer64, batchSize));
@@ -125,7 +130,7 @@ struct CombineXsmmOp : public OpRewritePattern<xsmm::BrgemmOp> {
     invokeOperands.push_back(batchDim);
 
     // Replace and delete the old invokes and their dispatches
-    rewriter.create<xsmm::FusedBrgemmOp>(loc, dtype, invokeOperands);
+    rewriter.create<xsmm::FusedBrgemmOp>(loc, dtype, btype, ctype, invokeOperands);
     rewriter.eraseOp(brgemmOp);
     rewriter.eraseOp(brgemmOp.getOperand(0).getDefiningOp());
     if (fusedMatch.binaryOp) {

@@ -78,12 +78,16 @@ void replaceOpWithUnary(RewriterBase &rewriter, Operation *operation,
       rewriter.getContext(), ArrayRef<int64_t>{unaryInfo.m, unaryInfo.n,
                                                unaryInfo.ldi, unaryInfo.ldo});
   auto dtype = xsmm::utils::getDataType(rewriter, operands.back().getType());
+  //TODO: Needed to be re-checked with respect to operands
+  auto btype = xsmm::utils::getDataType(rewriter, operands.back().getType());
+  auto ctype = xsmm::utils::getDataType(rewriter, operands.back().getType());
+
   Value dispatched = rewriter.create<xsmm::UnaryDispatchOp>(
-      loc, integer64, kind, dims, flags, dtype);
+      loc, integer64, kind, dims, flags, dtype, btype, ctype);
   SmallVector<Value> invokeOperands;
   invokeOperands.push_back(dispatched);
   invokeOperands.append(operands.begin(), operands.end());
-  rewriter.replaceOpWithNewOp<xsmm::UnaryOp>(operation, dtype, kind,
+  rewriter.replaceOpWithNewOp<xsmm::UnaryOp>(operation, dtype, btype, ctype, kind,
                                              invokeOperands);
 }
 

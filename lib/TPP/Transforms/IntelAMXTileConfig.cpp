@@ -59,6 +59,7 @@ struct IntelAMXTileConfig : OpRewritePattern<InvokeOpTy> {
     auto attributesSetup = *brgemmFlags;
     attributesSetup.push_back(xsmm::GemmFlagsAttr::get(
         rewriter.getContext(), xsmm::GemmFlags::NO_RESET_TILECONFIG));
+//TODO: RE-CHECK OPERANDS
     auto tileConfigSetup = rewriter.create<xsmm::IntelAMXTileConfigDispatchOp>(
         op.getLoc(), rewriter.getI64Type(),
         DenseI64ArrayAttr::get(
@@ -66,11 +67,12 @@ struct IntelAMXTileConfig : OpRewritePattern<InvokeOpTy> {
             dyn_cast<DispatchOpTy>(op.getOperand(0).getDefiningOp())
                 .getInputs()),
         rewriter.getArrayAttr(attributesSetup),
-        xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()));
+        xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()), xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()), xsmm::utils::getDataType(rewriter, op.getOperand(2).getType()));
 
     SmallVector<Attribute> attributesReset = *brgemmFlags;
     attributesReset.push_back(xsmm::GemmFlagsAttr::get(
         rewriter.getContext(), xsmm::GemmFlags::NO_SETUP_TILECONFIG));
+    //TODO: RE-CHECK OPERANDS
     auto tileConfigReset = rewriter.create<xsmm::IntelAMXTileConfigDispatchOp>(
         op.getLoc(), rewriter.getI64Type(),
         DenseI64ArrayAttr::get(
@@ -78,7 +80,7 @@ struct IntelAMXTileConfig : OpRewritePattern<InvokeOpTy> {
             dyn_cast<DispatchOpTy>(op.getOperand(0).getDefiningOp())
                 .getInputs()),
         rewriter.getArrayAttr(attributesReset),
-        xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()));
+        xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()), xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()), xsmm::utils::getDataType(rewriter, op.getOperand(2).getType()));
 
     SmallVector<Attribute> attributesBrgemm = *brgemmFlags;
     attributesBrgemm.push_back(xsmm::GemmFlagsAttr::get(
@@ -102,9 +104,10 @@ struct IntelAMXTileConfig : OpRewritePattern<InvokeOpTy> {
     auto opItr = op->getOperands().begin();
     std::advance(opItr, 1);
     invokeOperands.append(opItr, op->getOperands().end());
+//TODO: RE-CHECK OPERANDS
     rewriter.create<InvokeOpTy>(
         op.getLoc(),
-        xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()),
+        xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()), xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()), xsmm::utils::getDataType(rewriter, op.getOperand(2).getType()),
         invokeOperands);
 
     ValueRange tileResetInputs{alloca};

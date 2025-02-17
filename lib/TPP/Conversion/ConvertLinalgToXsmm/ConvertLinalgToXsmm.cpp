@@ -89,12 +89,17 @@ static void replaceOpWithBinary(RewriterBase &rewriter,
                         binaryInfo.ldiRhs, binaryInfo.ldo});
   auto dtype =
       xsmm::utils::getDataType(rewriter, linalgOp.getDpsInits()[0].getType());
+  auto btype =
+      xsmm::utils::getDataType(rewriter, linalgOp.getDpsInits()[0].getType());
+  auto ctype =
+      xsmm::utils::getDataType(rewriter, linalgOp.getDpsInits()[0].getType());
+
   Value dispatched = rewriter.create<xsmm::BinaryDispatchOp>(
-      loc, integer64, kind, dims, flags, dtype);
+      loc, integer64, kind, dims, flags, dtype, btype, ctype);
   SmallVector<Value> invokeOperands;
   invokeOperands.push_back(dispatched);
   invokeOperands.append(operands.begin(), operands.end());
-  rewriter.replaceOpWithNewOp<xsmm::BinaryOp>(linalgOp, dtype, kind,
+  rewriter.replaceOpWithNewOp<xsmm::BinaryOp>(linalgOp, dtype, btype, ctype, kind,
                                               invokeOperands);
 }
 
@@ -441,6 +446,11 @@ static void replaceOpWithGemmLikeOp(RewriterBase &rewriter,
 
   auto dtype =
       xsmm::utils::getDataType(rewriter, linalgOp.getDpsInits()[0].getType());
+  auto btype =
+      xsmm::utils::getDataType(rewriter, linalgOp.getDpsInits()[0].getType());
+  auto ctype =
+      xsmm::utils::getDataType(rewriter, linalgOp.getDpsInits()[0].getType());
+
   IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
   Location loc = linalgOp.getLoc();
   xsmm::GemmFlagsAttr gemmFlags;
@@ -474,22 +484,22 @@ static void replaceOpWithGemmLikeOp(RewriterBase &rewriter,
         rewriter.getContext(),
         ArrayRef<int64_t>{m, n, k, lda, ldb, ldc, strideA, strideB});
     Value dispatched = rewriter.create<xsmm::BrgemmDispatchOp>(
-        loc, integer64, dims, flags, dtype);
+        loc, integer64, dims, flags, dtype, btype, ctype);
     Value batchDim = rewriter.create<arith::ConstantOp>(
         loc, integer64, rewriter.getIntegerAttr(integer64, batch));
     invokeOperands.push_back(dispatched);
     invokeOperands.append(inputs);
     invokeOperands.push_back(batchDim);
-    rewriter.replaceOpWithNewOp<xsmm::BrgemmOp>(linalgOp, dtype,
+    rewriter.replaceOpWithNewOp<xsmm::BrgemmOp>(linalgOp, dtype, btype, ctype,
                                                 invokeOperands);
   } else {
     DenseI64ArrayAttr dims = DenseI64ArrayAttr::get(
         rewriter.getContext(), ArrayRef<int64_t>{m, n, k, lda, ldb, ldc});
     Value dispatched = rewriter.create<xsmm::GemmDispatchOp>(
-        loc, integer64, dims, flags, dtype);
+        loc, integer64, dims, flags, dtype, btype, ctype);
     invokeOperands.push_back(dispatched);
     invokeOperands.append(inputs);
-    rewriter.replaceOpWithNewOp<xsmm::GemmOp>(linalgOp, dtype, invokeOperands);
+    rewriter.replaceOpWithNewOp<xsmm::GemmOp>(linalgOp, dtype, btype, ctype, invokeOperands);
   }
 }
 

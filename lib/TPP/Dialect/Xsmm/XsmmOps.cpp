@@ -15,6 +15,7 @@
 
 #define GET_OP_CLASSES
 #include "TPP/Dialect/Xsmm/XsmmOps.cpp.inc"
+#include <iostream>
 
 using namespace mlir;
 using namespace mlir::xsmm;
@@ -22,6 +23,8 @@ using namespace mlir::xsmm;
 namespace {
 constexpr std::string_view INPUTS = "inputs";
 constexpr std::string_view DATA_TYPE = "data_type";
+constexpr std::string_view B_TYPE = "b_type";
+constexpr std::string_view C_TYPE = "c_type";
 constexpr std::string_view FLAGS_NAME = "flags";
 constexpr std::string_view KIND = "kind";
 constexpr std::string_view UNARY_FLAGS_NAME = "unary_flags";
@@ -34,9 +37,11 @@ template <typename EnumClass>
 static ParseResult parseEnum(EnumClass &value, OpAsmParser &parser) {
   StringRef flag;
   auto loc = parser.getCurrentLocation();
+  //std::cout << " The flag: " << flag.str() << "\n";
   if (parser.parseKeyword(&flag))
     return failure();
   auto flagAttr = symbolizeEnum<EnumClass>(flag);
+  //std::cout << " The flag: " << flag.str() << "\n";
   if (!flagAttr)
     return parser.emitError(loc, "invalid enum ") << flag;
   value = *flagAttr;
@@ -58,15 +63,29 @@ static ParseResult parseDataTypeImpl(OpAsmParser &parser,
   if (parser.parseKeyword(DATA_TYPE) || parser.parseEqual())
     return failure();
   DataType dataType;
-  DataType compType;
   if (parseEnum(dataType, parser))
-    return failure();
-  if (parseEnum(compType, parser))
     return failure();
   result.addAttribute(DATA_TYPE,
                       DataTypeAttr::get(builder.getContext(), dataType));
-  result.addAttribute(DATA_TYPE,
-                      DataTypeAttr::get(builder.getContext(), compType));
+
+
+  /*if (parser.parseKeyword(B_TYPE) || parser.parseEqual())
+    return failure();
+  DataType bType;
+  if (parseEnum(bType, parser))
+    return failure();
+  result.addAttribute(B_TYPE,
+                      DataTypeAttr::get(builder.getContext(), bType));
+
+
+  if (parser.parseKeyword(C_TYPE) || parser.parseEqual())
+    return failure();
+  DataType cType;
+  if (parseEnum(cType, parser))
+    return failure();
+  result.addAttribute(C_TYPE,
+                      DataTypeAttr::get(builder.getContext(), cType));*/
+
   result.addTypes(builder.getIntegerType(64));
 
   // Parse the optional attribute list
@@ -172,15 +191,42 @@ static void printerInputImpl(OpAsmPrinter &printer, OpTy op) {
 
 template <typename OpTy>
 static void printerDataTypeImpl(OpAsmPrinter &printer, OpTy op) {
+  //TODO: have to replace for a_type
   printer << DATA_TYPE << " = ";
   auto dataType = op.getDataType();
-  printer << xsmm::stringifyDataType(dataType);
+  printer << xsmm::stringifyDataType(dataType) << " ";
   printer.printOptionalAttrDict(
       op->getAttrs(),
       /*elidedAttrs=*/{DATA_TYPE, FLAGS_NAME, INPUTS, KIND, FLAGS_NAME,
                        UNARY_FLAGS_NAME, BINARY_FLAGS_NAME, BINARY_KIND,
                        UNARY_KIND});
 }
+
+
+template <typename OpTy>
+static void printerBTypeImpl(OpAsmPrinter &printer, OpTy op) {
+  printer << B_TYPE << " = ";
+  auto dataType = op.getDataType();
+  printer << xsmm::stringifyDataType(dataType) << " ";
+  printer.printOptionalAttrDict(
+      op->getAttrs(),
+      /*elidedAttrs=*/{B_TYPE,C_TYPE, DATA_TYPE, FLAGS_NAME, INPUTS, KIND, FLAGS_NAME,
+                       UNARY_FLAGS_NAME, BINARY_FLAGS_NAME, BINARY_KIND,
+                       UNARY_KIND});
+}
+
+template <typename OpTy>
+static void printerCTypeImpl(OpAsmPrinter &printer, OpTy op) {
+  printer << C_TYPE << " = ";
+  auto dataType = op.getDataType();
+  printer << xsmm::stringifyDataType(dataType) << " ";
+  printer.printOptionalAttrDict(
+      op->getAttrs(),
+      /*elidedAttrs=*/{B_TYPE,C_TYPE, DATA_TYPE, FLAGS_NAME, INPUTS, KIND, FLAGS_NAME,
+                       UNARY_FLAGS_NAME, BINARY_FLAGS_NAME, BINARY_KIND,
+                       UNARY_KIND});
+}
+
 
 template <typename AttrTy>
 static void printerFlagsImpl(OpAsmPrinter &printer,
@@ -198,6 +244,8 @@ void GemmDispatchOp::print(OpAsmPrinter &printer) {
   auto getOpFlags = [this]() -> ArrayAttr { return this->getFlags(); };
   printerFlagsImpl<GemmFlagsAttr>(printer, getOpFlags, FLAGS_NAME);
   printerDataTypeImpl<GemmDispatchOp>(printer, *this);
+  //printerBTypeImpl<GemmDispatchOp>(printer, *this);
+  //printerCTypeImpl<GemmDispatchOp>(printer, *this);
 }
 
 void BrgemmDispatchOp::print(OpAsmPrinter &printer) {
@@ -205,6 +253,8 @@ void BrgemmDispatchOp::print(OpAsmPrinter &printer) {
   auto getOpFlags = [this]() -> ArrayAttr { return this->getFlags(); };
   printerFlagsImpl<GemmFlagsAttr>(printer, getOpFlags, FLAGS_NAME);
   printerDataTypeImpl<BrgemmDispatchOp>(printer, *this);
+  //printerBTypeImpl<BrgemmDispatchOp>(printer, *this);
+  //printerCTypeImpl<BrgemmDispatchOp>(printer, *this);
 }
 
 void FusedBrgemmDispatchOp::print(OpAsmPrinter &printer) {
@@ -222,6 +272,8 @@ void FusedBrgemmDispatchOp::print(OpAsmPrinter &printer) {
   };
   printerFlagsImpl<UnaryFlagsAttr>(printer, getOpUnaryFlags, UNARY_FLAGS_NAME);
   printerDataTypeImpl<FusedBrgemmDispatchOp>(printer, *this);
+  //printerBTypeImpl<FusedBrgemmDispatchOp>(printer, *this);
+  //printerCTypeImpl<FusedBrgemmDispatchOp>(printer, *this);
 }
 
 void UnaryDispatchOp::print(OpAsmPrinter &printer) {
@@ -230,6 +282,8 @@ void UnaryDispatchOp::print(OpAsmPrinter &printer) {
   auto getOpFlags = [this]() -> ArrayAttr { return this->getFlags(); };
   printerFlagsImpl<UnaryFlagsAttr>(printer, getOpFlags, FLAGS_NAME);
   printerDataTypeImpl<UnaryDispatchOp>(printer, *this);
+  //printerBTypeImpl<UnaryDispatchOp>(printer, *this);
+  //printerCTypeImpl<UnaryDispatchOp>(printer, *this);
 }
 
 void BinaryDispatchOp::print(OpAsmPrinter &printer) {
@@ -238,6 +292,8 @@ void BinaryDispatchOp::print(OpAsmPrinter &printer) {
   auto getOpFlags = [this]() -> ArrayAttr { return this->getFlags(); };
   printerFlagsImpl<BinaryFlagsAttr>(printer, getOpFlags, FLAGS_NAME);
   printerDataTypeImpl<BinaryDispatchOp>(printer, *this);
+  //printerBTypeImpl<BinaryDispatchOp>(printer, *this);
+  //printerCTypeImpl<BinaryDispatchOp>(printer, *this);
 }
 
 void IntelAMXTileConfigDispatchOp::print(OpAsmPrinter &printer) {
@@ -245,6 +301,8 @@ void IntelAMXTileConfigDispatchOp::print(OpAsmPrinter &printer) {
   auto getOpFlags = [this]() -> ArrayAttr { return this->getFlags(); };
   printerFlagsImpl<GemmFlagsAttr>(printer, getOpFlags, FLAGS_NAME);
   printerDataTypeImpl<IntelAMXTileConfigDispatchOp>(printer, *this);
+  //printerBTypeImpl<IntelAMXTileConfigDispatchOp>(printer, *this);
+  //printerCTypeImpl<IntelAMXTileConfigDispatchOp>(printer, *this);
 }
 
 ParseResult IntelAMXTileConfigDispatchOp::parse(OpAsmParser &parser,
