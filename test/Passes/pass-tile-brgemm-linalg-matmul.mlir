@@ -61,17 +61,21 @@ module {
 }
 
 // CONF2-LABEL: func.func @gemm_32tiles_do_tiling_bf16
-// CONF2: memref.subview
-// CONF2-NEXT: linalg.fill
-// CONF2-NEXT: memref.subview
-// CONF2-NEXT: scf.for
-// CONF2-NEXT: scf.for
-// CONF2-NEXT: scf.for
-// CONF2-NEXT: scf.for
-// CONF2-NEXT: memref.subview
-// CONF2-NEXT: memref.subview
-// CONF2-NEXT: memref.subview
-// CONF2-NEXT: linalg.generic
+// CONF2-DAG: %[[C1:.+]] = arith.constant 1 : index
+// CONF2-DAG: %[[C32:.+]] = arith.constant 32 : index
+// CONF2-DAG: %[[C16:.+]] = arith.constant 16 : index
+// CONF2-DAG: %[[C0:.+]] = arith.constant 0 : index
+// CONF2: %subview = memref.subview %alloc[%arg1, %arg2, 0, 0] [1, 1, 32, 32] [1, 1, 1, 1] : memref<8x32x32x32xbf16> to memref<32x32xbf16, strided<[32, 1], offset: ?>>
+// CONF2-NEXT: linalg.fill ins(%cst : bf16) outs(%subview : memref<32x32xbf16, strided<[32, 1], offset: ?>>)
+// CONF2-NEXT: %subview_0 = memref.subview %expand_shape[%arg1, 0, 0, 0, 0] [1, 32, 32, 16, 2] [1, 1, 1, 1, 1] : memref<8x32x32x16x2xbf16> to memref<32x32x16x2xbf16, strided<[1024, 32, 2, 1], offset: ?>>
+// CONF2-NEXT:  scf.for %[[I:.+]] = %[[C0]] to %[[C32]] step %[[C32]] {
+// CONF2-NEXT:   scf.for %[[J:.+]] = %[[C0]] to %[[C32]] step %[[C32]] {
+// CONF2-NEXT:    scf.for %[[K:.+]] = %[[C0]] to %[[C32]] step %[[C1]] {
+// CONF2-NEXT:     scf.for %[[L:.+]] = %[[C0]] to %[[C16]] step %[[C16]] {
+// CONF2-NEXT:      %subview_1 = memref.subview %subview_0[%[[K]], %[[I]], %[[L]], 0] [1, 32, 16, 2] [1, 1, 1, 1] : memref<32x32x16x2xbf16, strided<[1024, 32, 2, 1], offset: ?>> to memref<1x32x16x2xbf16, strided<[1024, 32, 2, 1], offset: ?>>
+// CONF2-NEXT:      %subview_2 = memref.subview %0[%[[K]], %[[L]], %[[J]], 0]  [1, 16, 32, 2] [1, 1, 1, 1] : memref<32x16x32x2xbf16> to memref<1x16x32x2xbf16, strided<[1024, 64, 2, 1], offset: ?>>
+// CONF2-NEXT:      %subview_3 = memref.subview %subview[%[[I]], %[[J]]]  [32, 32] [1, 1] : memref<32x32xbf16, strided<[32, 1], offset: ?>> to memref<32x32xbf16, strided<[32, 1], offset: ?>>
+// CONF2-NEXT:      linalg.generic {indexing_maps = [#map, #map1, #map2], iterator_types = ["reduction", "reduction", "parallel", "parallel", "reduction"]} ins(%subview_1, %subview_2 : memref<1x32x16x2xbf16, strided<[1024, 32, 2, 1], offset: ?>>, memref<1x16x32x2xbf16, strided<[1024, 64, 2, 1], offset: ?>>) outs(%subview_3 : memref<32x32xbf16, strided<[32, 1], offset: ?>>)
 
 // -----
 
@@ -131,12 +135,6 @@ module {
 // CONF1-LABEL: func.func @brgemm_tensor_type_no_tiling
 func.func @brgemm_tensor_type_no_tiling(%arg0: tensor<128x256x512xf32>, %arg1: tensor<128x512x256xf32>, %arg2: tensor<256x256xf32>) -> tensor<256x256xf32> {
 // CONF1-NOT: scf.for
-// CONF1-NOT: scf.for
-// CONF1-NOT: scf.for
-// CONF1-NOT: scf.for
-// CONF1-NOT: memref.subview
-// CONF1-NOT: memref.subview
-// CONF1-NOT: memref.subview
    %0 = linalg.batch_reduce_matmul ins(%arg0, %arg1 : tensor<128x256x512xf32>, tensor<128x512x256xf32>) outs(%arg2 : tensor<256x256xf32>) -> tensor<256x256xf32>
    return %0 : tensor<256x256xf32>
 }
@@ -155,12 +153,6 @@ module {
 // CONF1-LABEL: func.func @matmul_no_tiling
 func.func @matmul_no_tiling(%arg0: memref<64x64xf32>, %arg1: memref<64x64xf32>, %arg2: memref<64x64xf32>) {
 // CONF1-NOT: scf.for
-// CONF1-NOT: scf.for
-// CONF1-NOT: scf.for
-// CONF1-NOT: scf.for
-// CONF1-NOT: memref.subview
-// CONF1-NOT: memref.subview
-// CONF1-NOT: memref.subview
      linalg.matmul ins(%arg0, %arg1 : memref<64x64xf32>, memref<64x64xf32>)
                 outs(%arg2 : memref<64x64xf32>)
      return

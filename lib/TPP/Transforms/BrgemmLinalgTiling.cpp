@@ -1,5 +1,4 @@
-//===- BrgemmLinalgTiling.cpp
-//-----------------------------------------*-C++-*-===//
+//===- BrgemmLinalgTiling.cpp--------------------------------------*-C++-*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -113,13 +112,14 @@ struct LinalgOpTiling : OpRewritePattern<BrgemmOp> {
           dyn_cast<MemRefType>(brgemmOp.getOperand(0).getType()).getShape();
       auto kTileVnni = mxnxkTile[2] / tensorShape[3];
 
-      if (kTileVnni > 0) {
-        mxnxkTile[2] = kTileVnni;
-      } else {
-        return rewriter.notifyMatchFailure(
+      // Note: We make an assumption that the k tile size is divisible to 
+      // the powers of 2.
+      if (kTileVnni < 1)
+	  return rewriter.notifyMatchFailure(
             brgemmOp, "Failed matching K tile size for batch reduce operation "
                       "with vnni layout. K tile size should be >= vnni layout");
-      }
+
+      mxnxkTile[2] = kTileVnni;
 
       SmallVector<int> swap_i = {0, 2, 1};
       std::map<int, std::map<int, Value>> inductionVars;
@@ -182,7 +182,7 @@ struct LinalgOpTiling : OpRewritePattern<BrgemmOp> {
 
       SmallVector<SmallVector<int64_t>> tileshapes{mxkTile, kxnTile, mxnTile};
       // Creating subviews
-      for (size_t i = 0; i < brgemmOp.getNumOperands(); i++) {
+      for (size_t i = 0, opSize =  brgemmOp.getNumOperands(); i < opSize; i++) {
         SmallVector<OpFoldResult> offsets;
         SmallVector<int64_t> indices;
         SmallVector<OpFoldResult> shape;
@@ -194,7 +194,7 @@ struct LinalgOpTiling : OpRewritePattern<BrgemmOp> {
 
         // Iterates over the shape of each tensor and update its offsets,
         // indices, shapes, strides with respect to tile sizes
-        for (size_t j = 0; j < tensorShape.size(); j++) {
+        for (size_t j = 0, tSize = tensorShape.size(); j < tSize; j++) {
           if (j == 0 && (i < 2)) { // Updates the batch dimension
             offsets.push_back(inductionVars[i][j]);
             indices.push_back(1);
