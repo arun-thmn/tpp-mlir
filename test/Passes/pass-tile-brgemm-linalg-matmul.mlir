@@ -13,115 +13,25 @@ module {
   }
 }
 
+
 // CONF1-LABEL: func.func @gemm_do_register_tiling
-// CONF1: memref.subview
-// CONF1-NEXT: memref.subview
-// CONF1-NEXT: memref.subview
-// CONF1-NEXT: scf.for
-// CONF1-NEXT: scf.for
-// CONF1-NEXT: scf.for
-// CONF1-NEXT: scf.for
-// CONF1-NEXT: memref.subview
-// CONF1-NEXT: memref.subview
-// CONF1-NEXT: memref.subview
-// CONF1-NEXT: linalg.batch_reduce_matmul
-
-// -----
-
-module {
-  memref.global "private" constant @__constant_48x32x32xf32 : memref<48x32x32xf32> = dense<1.000000e+00> {alignment = 64 : i64}
-  func.func @chainned_gemm_do_register_tiling(%arg0: memref<8x48x32x32xf32>) -> memref<8x48x32x32xf32> {
-    %cst = arith.constant 0.000000e+00 : f32
-    %0 = memref.get_global @__constant_48x32x32xf32 : memref<48x32x32xf32>
-    %alloc = memref.alloc() {alignment = 64 : i64} : memref<8x48x32x32xf32>
-    scf.forall (%arg1, %arg2) in (8, 48) {
-      %subview = memref.subview %alloc[%arg1, %arg2, 0, 0] [1, 1, 32, 32] [1, 1, 1, 1] : memref<8x48x32x32xf32> to memref<32x32xf32, strided<[32, 1], offset: ?>>
-      linalg.fill ins(%cst : f32) outs(%subview : memref<32x32xf32, strided<[32, 1], offset: ?>>)
-      %subview_1 = memref.subview %arg0[%arg1, 0, 0, 0] [1, 48, 32, 32] [1, 1, 1, 1] : memref<8x48x32x32xf32> to memref<48x32x32xf32, strided<[1024, 32, 1], offset: ?>>
-      linalg.batch_reduce_matmul ins(%subview_1, %0 : memref<48x32x32xf32, strided<[1024, 32, 1], offset: ?>>, memref<48x32x32xf32>) outs(%subview : memref<32x32xf32, strided<[32, 1], offset: ?>>)
-    }
-    %alloc_0 = memref.alloc() {alignment = 64 : i64} : memref<8x48x32x32xf32>
-    scf.forall (%arg1, %arg2) in (8, 48) {
-      %subview = memref.subview %alloc_0[%arg1, %arg2, 0, 0] [1, 1, 32, 32] [1, 1, 1, 1] : memref<8x48x32x32xf32> to memref<32x32xf32, strided<[32, 1], offset: ?>>
-      linalg.fill ins(%cst : f32) outs(%subview : memref<32x32xf32, strided<[32, 1], offset: ?>>)
-      %subview_1 = memref.subview %alloc[%arg1, 0, 0, 0] [1, 48, 32, 32] [1, 1, 1, 1] : memref<8x48x32x32xf32> to memref<48x32x32xf32, strided<[1024, 32, 1], offset: ?>>
-      linalg.batch_reduce_matmul ins(%subview_1, %0 : memref<48x32x32xf32, strided<[1024, 32, 1], offset: ?>>, memref<48x32x32xf32>) outs(%subview : memref<32x32xf32, strided<[32, 1], offset: ?>>)
-    }
-    scf.forall (%arg1, %arg2) in (8, 48) {
-      %subview = memref.subview %alloc[%arg1, %arg2, 0, 0] [1, 1, 32, 32] [1, 1, 1, 1] : memref<8x48x32x32xf32> to memref<32x32xf32, strided<[32, 1], offset: ?>>
-      linalg.fill ins(%cst : f32) outs(%subview : memref<32x32xf32, strided<[32, 1], offset: ?>>)
-      %subview_1 = memref.subview %alloc_0[%arg1, 0, 0, 0] [1, 48, 32, 32] [1, 1, 1, 1] : memref<8x48x32x32xf32> to memref<48x32x32xf32, strided<[1024, 32, 1], offset: ?>>
-      linalg.batch_reduce_matmul ins(%subview_1, %0 : memref<48x32x32xf32, strided<[1024, 32, 1], offset: ?>>, memref<48x32x32xf32>) outs(%subview : memref<32x32xf32, strided<[32, 1], offset: ?>>)
-    }
-    return %alloc : memref<8x48x32x32xf32>
-  }
-}
-
-// CONF1-LABEL:   memref.global "private" constant @__constant_48x32x32xf32 : memref<48x32x32xf32> = dense<1.000000e+00> {alignment = 64 : i64}
-// CONF1-LABEL:   func.func @chainned_gemm_do_register_tiling(
-// CONF1-SAME:                     %[[VAL_0:.*]]: memref<8x48x32x32xf32>) -> memref<8x48x32x32xf32> {
-// CONF1:           %[[VAL_1:.*]] = arith.constant 1 : index
-// CONF1:           %[[VAL_2:.*]] = arith.constant 48 : index
-// CONF1:           %[[VAL_3:.*]] = arith.constant 8 : index
-// CONF1:           %[[VAL_4:.*]] = arith.constant 32 : index
-// CONF1:           %[[VAL_5:.*]] = arith.constant 0 : index
-// CONF1:           %[[VAL_6:.*]] = arith.constant 0.000000e+00 : f32
-// CONF1:           %[[VAL_7:.*]] = memref.get_global @__constant_48x32x32xf32 : memref<48x32x32xf32>
-// CONF1:           %[[VAL_8:.*]] = memref.alloc() {alignment = 64 : i64} : memref<8x48x32x32xf32>
-// CONF1:           scf.forall (%[[VAL_9:.*]], %[[VAL_10:.*]]) in (8, 48) {
-// CONF1:             %[[VAL_11:.*]] = memref.subview %[[VAL_8]]{{\[}}%[[VAL_9]], %[[VAL_10]], 0, 0] [1, 1, 32, 32] [1, 1, 1, 1] : memref<8x48x32x32xf32> to memref<32x32xf32, strided<[32, 1], offset: ?>>
-// CONF1:             linalg.fill ins(%[[VAL_6]] : f32) outs(%[[VAL_11]] : memref<32x32xf32, strided<[32, 1], offset: ?>>)
-// CONF1:             %[[VAL_12:.*]] = memref.subview %[[VAL_0]]{{\[}}%[[VAL_9]], 0, 0, 0] [1, 48, 32, 32] [1, 1, 1, 1] : memref<8x48x32x32xf32> to memref<48x32x32xf32, strided<[1024, 32, 1], offset: ?>>
-// CONF1:             scf.for %[[VAL_13:.*]] = %[[VAL_5]] to %[[VAL_4]] step %[[VAL_3]] {
-// CONF1:               scf.for %[[VAL_14:.*]] = %[[VAL_5]] to %[[VAL_4]] step %[[VAL_4]] {
-// CONF1:                 scf.for %[[VAL_15:.*]] = %[[VAL_5]] to %[[VAL_2]] step %[[VAL_1]] {
-// CONF1:                   scf.for %[[VAL_16:.*]] = %[[VAL_5]] to %[[VAL_4]] step %[[VAL_1]] {
-// CONF1:                     %[[VAL_17:.*]] = memref.subview %[[VAL_12]]{{\[}}%[[VAL_15]], %[[VAL_13]], %[[VAL_16]]] [1, 8, 1] [1, 1, 1] : memref<48x32x32xf32, strided<[1024, 32, 1], offset: ?>> to memref<1x8x1xf32, strided<[1024, 32, 1], offset: ?>>
-// CONF1:                     %[[VAL_18:.*]] = memref.subview %[[VAL_7]]{{\[}}%[[VAL_15]], %[[VAL_16]], %[[VAL_14]]] [1, 1, 32] [1, 1, 1] : memref<48x32x32xf32> to memref<1x1x32xf32, strided<[1024, 32, 1], offset: ?>>
-// CONF1:                     %[[VAL_19:.*]] = memref.subview %[[VAL_11]]{{\[}}%[[VAL_13]], %[[VAL_14]]] [8, 32] [1, 1] : memref<32x32xf32, strided<[32, 1], offset: ?>> to memref<8x32xf32, strided<[32, 1], offset: ?>>
-// CONF1:                     linalg.batch_reduce_matmul ins(%[[VAL_17]], %[[VAL_18]] : memref<1x8x1xf32, strided<[1024, 32, 1], offset: ?>>, memref<1x1x32xf32, strided<[1024, 32, 1], offset: ?>>) outs(%[[VAL_19]] : memref<8x32xf32, strided<[32, 1], offset: ?>>)
-// CONF1:                   }
-// CONF1:                 }
-// CONF1:               }
-// CONF1:             }
-// CONF1:           }
-// CONF1:           %[[VAL_20:.*]] = memref.alloc() {alignment = 64 : i64} : memref<8x48x32x32xf32>
-// CONF1:           scf.forall (%[[VAL_21:.*]], %[[VAL_22:.*]]) in (8, 48) {
-// CONF1:             %[[VAL_23:.*]] = memref.subview %[[VAL_20]]{{\[}}%[[VAL_21]], %[[VAL_22]], 0, 0] [1, 1, 32, 32] [1, 1, 1, 1] : memref<8x48x32x32xf32> to memref<32x32xf32, strided<[32, 1], offset: ?>>
-// CONF1:             linalg.fill ins(%[[VAL_6]] : f32) outs(%[[VAL_23]] : memref<32x32xf32, strided<[32, 1], offset: ?>>)
-// CONF1:             %[[VAL_24:.*]] = memref.subview %[[VAL_8]]{{\[}}%[[VAL_21]], 0, 0, 0] [1, 48, 32, 32] [1, 1, 1, 1] : memref<8x48x32x32xf32> to memref<48x32x32xf32, strided<[1024, 32, 1], offset: ?>>
-// CONF1:             scf.for %[[VAL_25:.*]] = %[[VAL_5]] to %[[VAL_4]] step %[[VAL_3]] {
-// CONF1:               scf.for %[[VAL_26:.*]] = %[[VAL_5]] to %[[VAL_4]] step %[[VAL_4]] {
-// CONF1:                 scf.for %[[VAL_27:.*]] = %[[VAL_5]] to %[[VAL_2]] step %[[VAL_1]] {
-// CONF1:                   scf.for %[[VAL_28:.*]] = %[[VAL_5]] to %[[VAL_4]] step %[[VAL_1]] {
-// CONF1:                     %[[VAL_29:.*]] = memref.subview %[[VAL_24]]{{\[}}%[[VAL_27]], %[[VAL_25]], %[[VAL_28]]] [1, 8, 1] [1, 1, 1] : memref<48x32x32xf32, strided<[1024, 32, 1], offset: ?>> to memref<1x8x1xf32, strided<[1024, 32, 1], offset: ?>>
-// CONF1:                     %[[VAL_30:.*]] = memref.subview %[[VAL_7]]{{\[}}%[[VAL_27]], %[[VAL_28]], %[[VAL_26]]] [1, 1, 32] [1, 1, 1] : memref<48x32x32xf32> to memref<1x1x32xf32, strided<[1024, 32, 1], offset: ?>>
-// CONF1:                     %[[VAL_31:.*]] = memref.subview %[[VAL_23]]{{\[}}%[[VAL_25]], %[[VAL_26]]] [8, 32] [1, 1] : memref<32x32xf32, strided<[32, 1], offset: ?>> to memref<8x32xf32, strided<[32, 1], offset: ?>>
-// CONF1:                     linalg.batch_reduce_matmul ins(%[[VAL_29]], %[[VAL_30]] : memref<1x8x1xf32, strided<[1024, 32, 1], offset: ?>>, memref<1x1x32xf32, strided<[1024, 32, 1], offset: ?>>) outs(%[[VAL_31]] : memref<8x32xf32, strided<[32, 1], offset: ?>>)
-// CONF1:                   }
-// CONF1:                 }
-// CONF1:               }
-// CONF1:             }
-// CONF1:           }
-// CONF1:           scf.forall (%[[VAL_32:.*]], %[[VAL_33:.*]]) in (8, 48) {
-// CONF1:             %[[VAL_34:.*]] = memref.subview %[[VAL_8]]{{\[}}%[[VAL_32]], %[[VAL_33]], 0, 0] [1, 1, 32, 32] [1, 1, 1, 1] : memref<8x48x32x32xf32> to memref<32x32xf32, strided<[32, 1], offset: ?>>
-// CONF1:             linalg.fill ins(%[[VAL_6]] : f32) outs(%[[VAL_34]] : memref<32x32xf32, strided<[32, 1], offset: ?>>)
-// CONF1:             %[[VAL_35:.*]] = memref.subview %[[VAL_20]]{{\[}}%[[VAL_32]], 0, 0, 0] [1, 48, 32, 32] [1, 1, 1, 1] : memref<8x48x32x32xf32> to memref<48x32x32xf32, strided<[1024, 32, 1], offset: ?>>
-// CONF1:             scf.for %[[VAL_36:.*]] = %[[VAL_5]] to %[[VAL_4]] step %[[VAL_3]] {
-// CONF1:               scf.for %[[VAL_37:.*]] = %[[VAL_5]] to %[[VAL_4]] step %[[VAL_4]] {
-// CONF1:                 scf.for %[[VAL_38:.*]] = %[[VAL_5]] to %[[VAL_2]] step %[[VAL_1]] {
-// CONF1:                   scf.for %[[VAL_39:.*]] = %[[VAL_5]] to %[[VAL_4]] step %[[VAL_1]] {
-// CONF1:                     %[[VAL_40:.*]] = memref.subview %[[VAL_35]]{{\[}}%[[VAL_38]], %[[VAL_36]], %[[VAL_39]]] [1, 8, 1] [1, 1, 1] : memref<48x32x32xf32, strided<[1024, 32, 1], offset: ?>> to memref<1x8x1xf32, strided<[1024, 32, 1], offset: ?>>
-// CONF1:                     %[[VAL_41:.*]] = memref.subview %[[VAL_7]]{{\[}}%[[VAL_38]], %[[VAL_39]], %[[VAL_37]]] [1, 1, 32] [1, 1, 1] : memref<48x32x32xf32> to memref<1x1x32xf32, strided<[1024, 32, 1], offset: ?>>
-// CONF1:                     %[[VAL_42:.*]] = memref.subview %[[VAL_34]]{{\[}}%[[VAL_36]], %[[VAL_37]]] [8, 32] [1, 1] : memref<32x32xf32, strided<[32, 1], offset: ?>> to memref<8x32xf32, strided<[32, 1], offset: ?>>
-// CONF1:                     linalg.batch_reduce_matmul ins(%[[VAL_40]], %[[VAL_41]] : memref<1x8x1xf32, strided<[1024, 32, 1], offset: ?>>, memref<1x1x32xf32, strided<[1024, 32, 1], offset: ?>>) outs(%[[VAL_42]] : memref<8x32xf32, strided<[32, 1], offset: ?>>)
-// CONF1:                   }
-// CONF1:                 }
-// CONF1:               }
-// CONF1:             }
-// CONF1:           }
-// CONF1:           return %[[VAL_8]] : memref<8x48x32x32xf32>
-// CONF1:         }
+// CONF1-DAG: %[[C1:.+]] = arith.constant 1 : index
+// CONF1-DAG: %[[C32:.+]] = arith.constant 32 : index
+// CONF1-DAG: %[[C8:.+]] = arith.constant 8 : index
+// CONF1-DAG: %[[C16:.+]] = arith.constant 16 : index
+// CONF1-DAG: %[[C0:.+]] = arith.constant 0 : index
+// CONF1: scf.forall (%arg3, %arg4) in (16, 32) {
+// CONF1-NEXT: %subview = memref.subview %arg0[%arg3, 0, 0, 0] [1, 32, 16, 32] [1, 1, 1, 1] : memref<16x32x16x32xf32> to memref<32x16x32xf32, strided<[512, 32, 1], offset: ?>>
+// CONF1-NEXT: %subview_0 = memref.subview %arg1[%arg4, 0, 0, 0] [1, 32, 32, 32] [1, 1, 1, 1] : memref<32x32x32x32xf32> to memref<32x32x32xf32, strided<[1024, 32, 1], offset: ?>>
+// CONF1-NEXT: %subview_1 = memref.subview %arg2[%arg3, %arg4, 0, 0] [1, 1, 16, 32] [1, 1, 1, 1] : memref<16x32x16x32xf32> to memref<16x32xf32, strided<[32, 1], offset: ?>>
+// CONF1-NEXT: scf.for %[[I:.+]] = %[[C0]] to %[[C16]] step %[[C8]] {
+// CONF1-NEXT:  scf.for %[[J:.+]] = %[[C0]] to %[[C32]] step %[[C32]] {
+// CONF1-NEXT:   scf.for %[[K:.+]] = %[[C0]] to %[[C32]] step %[[C1]] {
+// CONF1-NEXT:    scf.for %[[L:.+]] = %[[C0]] to %[[C32]] step %[[C1]] {
+// CONF1-NEXT:     %subview_2 = memref.subview %subview[%[[K]], %[[I]], %[[L]]] [1, 8, 1] [1, 1, 1] : memref<32x16x32xf32, strided<[512, 32, 1], offset: ?>> to memref<1x8x1xf32, strided<[512, 32, 1], offset: ?>>
+// CONF1-NEXT:     %subview_3 = memref.subview %subview_0[%[[K]], %[[L]], %[[J]]] [1, 1, 32] [1, 1, 1] : memref<32x32x32xf32, strided<[1024, 32, 1], offset: ?>> to memref<1x1x32xf32, strided<[1024, 32, 1], offset: ?>>
+// CONF1-NEXT:     %subview_4 = memref.subview %subview_1[%[[I]], %[[J]]] [8, 32] [1, 1] : memref<16x32xf32, strided<[32, 1], offset: ?>> to memref<8x32xf32, strided<[32, 1], offset: ?>>
+// CONF1-NEXT:     linalg.batch_reduce_matmul ins(%subview_2, %subview_3 : memref<1x8x1xf32, strided<[512, 32, 1], offset: ?>>, memref<1x1x32xf32, strided<[1024, 32, 1], offset: ?>>) outs(%subview_4 : memref<8x32xf32, strided<[32, 1], offset: ?>>)
 
 // -----
 
@@ -191,14 +101,69 @@ module {
 }
 
 // CONF2-LABEL: func.func @gemm_64tiles_do_tiling_bf16
-// CONF2: memref.subview
-// CONF2-NEXT: linalg.fill
-// CONF2-NEXT: memref.subview
-// CONF2-NEXT: scf.for
-// CONF2-NEXT: scf.for
-// CONF2-NEXT: scf.for
-// CONF2-NEXT: scf.for
-// CONF2-NEXT: memref.subview
-// CONF2-NEXT: memref.subview
-// CONF2-NEXT: memref.subview
-// CONF2-NEXT: linalg.generic
+// CONF2-DAG: %[[C1:.+]] = arith.constant 1 : index
+// CONF2-DAG: %[[C32:.+]] = arith.constant 32 : index
+// CONF2-DAG: %[[C64:.+]] = arith.constant 64 : index
+// CONF2-DAG: %[[C16:.+]] = arith.constant 16 : index
+// CONF2-DAG: %[[C0:.+]] = arith.constant 0 : index
+// CONF2: %subview = memref.subview %alloc[%arg1, %arg2, 0, 0] [1, 1, 64, 64] [1, 1, 1, 1] : memref<4x16x64x64xbf16> to memref<64x64xbf16, strided<[64, 1], offset: ?>>
+// CONF2-NEXT: linalg.fill ins(%cst : bf16) outs(%subview : memref<64x64xbf16, strided<[64, 1], offset: ?>>)
+// CONF2-NEXT: %subview_0 = memref.subview %expand_shape[%arg1, 0, 0, 0, 0] [1, 16, 64, 32, 2] [1, 1, 1, 1, 1] : memref<4x16x64x32x2xbf16> to memref<16x64x32x2xbf16, strided<[4096, 64, 2, 1], offset: ?>>
+// CONF2-NEXT: scf.for %[[I:.+]] = %[[C0]] to %[[C64]] step %[[C32]] {
+// CONF2-NEXT:  scf.for %[[J:.+]] = %[[C0]] to %[[C64]] step %[[C32]] {
+// CONF2-NEXT:   scf.for %[[K:.+]] = %[[C0]] to %[[C16]] step %[[C1]] {
+// CONF2-NEXT:    scf.for %[[L:.+]] = %[[C0]] to %[[C32]] step %[[C16]] {
+// CONF2-NEXT:     %subview_1 = memref.subview %subview_0[%[[K]], %[[I]], %[[L]], 0] [1, 32, 16, 2] [1, 1, 1, 1] : memref<16x64x32x2xbf16, strided<[4096, 64, 2, 1], offset: ?>> to memref<1x32x16x2xbf16, strided<[4096, 64, 2, 1], offset: ?>>
+// CONF2-NEXT:     %subview_2 = memref.subview %0[%[[K]], %[[L]], %[[J]], 0] [1, 16, 32, 2] [1, 1, 1, 1] : memref<16x32x64x2xbf16> to memref<1x16x32x2xbf16, strided<[4096, 128, 2, 1], offset: ?>>
+// CONF2-NEXT:     %subview_3 = memref.subview %subview[%[[I]], %[[J]]] [32, 32] [1, 1] : memref<64x64xbf16, strided<[64, 1], offset: ?>> to memref<32x32xbf16, strided<[64, 1], offset: ?>>
+// CONF2-NEXT:     linalg.generic
+
+// -----
+
+module {
+  func.func @brgemm_tensor_type_no_tiling(%arg0: tensor<128x256x512xf32>, %arg1: tensor<128x512x256xf32>, %arg2: tensor<256x256xf32>) -> tensor<256x256xf32> {
+    %0 = linalg.batch_reduce_matmul ins(%arg0, %arg1 : tensor<128x256x512xf32>, tensor<128x512x256xf32>) outs(%arg2 : tensor<256x256xf32>) -> tensor<256x256xf32>
+    return %0 : tensor<256x256xf32>
+  }
+}
+
+
+// CONF1-LABEL: func.func @brgemm_tensor_type_no_tiling
+func.func @brgemm_tensor_type_no_tiling(%arg0: tensor<128x256x512xf32>, %arg1: tensor<128x512x256xf32>, %arg2: tensor<256x256xf32>) -> tensor<256x256xf32> {
+// CONF1-NOT: scf.for
+// CONF1-NOT: scf.for
+// CONF1-NOT: scf.for
+// CONF1-NOT: scf.for
+// CONF1-NOT: memref.subview
+// CONF1-NOT: memref.subview
+// CONF1-NOT: memref.subview
+   %0 = linalg.batch_reduce_matmul ins(%arg0, %arg1 : tensor<128x256x512xf32>, tensor<128x512x256xf32>) outs(%arg2 : tensor<256x256xf32>) -> tensor<256x256xf32>
+   return %0 : tensor<256x256xf32>
+}
+
+// -----
+
+module {
+  func.func @matmul_no_tiling(%arg0: memref<64x64xf32>, %arg1: memref<64x64xf32>, %arg2: memref<64x64xf32>) {
+     linalg.matmul ins(%arg0, %arg1 : memref<64x64xf32>, memref<64x64xf32>)
+                outs(%arg2 : memref<64x64xf32>)
+     return
+  }
+}
+
+
+// CONF1-LABEL: func.func @matmul_no_tiling
+func.func @matmul_no_tiling(%arg0: memref<64x64xf32>, %arg1: memref<64x64xf32>, %arg2: memref<64x64xf32>) {
+// CONF1-NOT: scf.for
+// CONF1-NOT: scf.for
+// CONF1-NOT: scf.for
+// CONF1-NOT: scf.for
+// CONF1-NOT: memref.subview
+// CONF1-NOT: memref.subview
+// CONF1-NOT: memref.subview
+     linalg.matmul ins(%arg0, %arg1 : memref<64x64xf32>, memref<64x64xf32>)
+                outs(%arg2 : memref<64x64xf32>)
+     return
+}
+
+
