@@ -64,7 +64,11 @@ struct LinalgOpTiling : OpRewritePattern<BrgemmOp> {
         std::count(brgemmIteratorTypes.begin(), brgemmIteratorTypes.end(),
                    utils::IteratorType::reduction);
 
-    if (reductionCount == 0 || reductionCount > 3)
+    int parallelCount =
+        std::count(brgemmIteratorTypes.begin(), brgemmIteratorTypes.end(),
+                   utils::IteratorType::parallel);
+
+    if (reductionCount == 0 || reductionCount > 3 || parallelCount != 2)
       return rewriter.notifyMatchFailure(brgemmOp,
                                          "Excepted GEMM like operation");
 
@@ -94,7 +98,6 @@ struct LinalgOpTiling : OpRewritePattern<BrgemmOp> {
     // Tiling with the help of upstream APIs
     linalg::LinalgTilingOptions tilingOptions;
     tilingOptions.setLoopType(linalg::LinalgTilingLoopType::Loops);
-    FailureOr<linalg::TiledLinalgOp> tiledOp;
 
     // Get rank and map of linalg op
     unsigned rankA = shapeTypeLhs.getRank();
@@ -170,7 +173,7 @@ struct LinalgOpTiling : OpRewritePattern<BrgemmOp> {
       tilingOptions.setInterchange({dimM, dimN, dimBR, dimK});
     }
 
-    tiledOp = linalg::tileLinalgOp(rewriter, brgemmOp, tilingOptions);
+    FailureOr<linalg::TiledLinalgOp> tiledOp = linalg::tileLinalgOp(rewriter, brgemmOp, tilingOptions);
     if (failed(tiledOp)) {
       return failure();
     }

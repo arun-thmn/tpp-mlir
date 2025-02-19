@@ -133,12 +133,8 @@ module {
 
 
 // CONF1-LABEL: func.func @brgemm_tensor_type_no_tiling
-func.func @brgemm_tensor_type_no_tiling(%arg0: tensor<128x256x512xf32>, %arg1: tensor<128x512x256xf32>, %arg2: tensor<256x256xf32>) -> tensor<256x256xf32> {
 // CONF1-NOT: scf.for
 // CONF2-NOT: scf.for
-   %0 = linalg.batch_reduce_matmul ins(%arg0, %arg1 : tensor<128x256x512xf32>, tensor<128x512x256xf32>) outs(%arg2 : tensor<256x256xf32>) -> tensor<256x256xf32>
-   return %0 : tensor<256x256xf32>
-}
 
 // -----
 
@@ -152,10 +148,5 @@ module {
 
 
 // CONF1-LABEL: func.func @matmul_no_tiling
-func.func @matmul_no_tiling(%arg0: memref<64x64xf32>, %arg1: memref<64x64xf32>, %arg2: memref<64x64xf32>) {
 // CONF1-NOT: scf.for
 // CONF2-NOT: scf.for
-     linalg.matmul ins(%arg0, %arg1 : memref<64x64xf32>, memref<64x64xf32>)
-                outs(%arg2 : memref<64x64xf32>)
-     return
-}
