@@ -79,9 +79,9 @@ module {
 
 // -----
 
-#map = affine_map<(d0, d1, d2, d3, d4) -> (d0, d2, d1, d4)>
-#map1 = affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d3, d4)>
-#map2 = affine_map<(d0, d1, d2, d3, d4) -> (d2, d3)>
+#map = affine_map<(d0, d1, d2, d3, d4) -> (d0, d3, d1, d4)>
+#map1 = affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, d4)>
+#map2 = affine_map<(d0, d1, d2, d3, d4) -> (d3, d2)>
 module {
   memref.global "private" constant @__constant_16x32x64x2xbf16 : memref<16x32x64x2xbf16> = dense<1.000000e+00> {alignment = 64 : i64}
   func.func @gemm_64tiles_do_tiling_bf16(%arg0: memref<4x16x64x64xbf16>) -> memref<4x16x64x64xbf16> {
