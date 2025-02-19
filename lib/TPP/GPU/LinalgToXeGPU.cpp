@@ -884,7 +884,7 @@ static LogicalResult createDPASKernel(linalg::LinalgOp linalgOp,
 
   // DPAS only works with F32 accumulators.
   auto dpasResType =
-      VectorType::get(dpasTypeC.getShape(), FloatType::getF32(ctx));
+      VectorType::get(dpasTypeC.getShape(), Float32Type::get(ctx));
 
   // Extend the accumulation values if needed.
   auto convOutPrecision = !typeC.getElementType().isF32();
@@ -1397,12 +1397,12 @@ struct LinalgToXeGPU : public tpp::impl::LinalgToXeGPUBase<LinalgToXeGPU> {
     // Run GEMM pattern first to allow fusion with its consumers.
     RewritePatternSet gemmPatterns(&getContext());
     populateLinalgGemmToXeGPUPatterns(gemmPatterns, options);
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(gemmPatterns));
+    (void)applyPatternsGreedily(getOperation(), std::move(gemmPatterns));
 
     // Convert other remaining ops.
     RewritePatternSet patterns(&getContext());
     populateLinalgEltwiseToXeGPUPatterns(patterns, options);
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+    (void)applyPatternsGreedily(getOperation(), std::move(patterns));
   }
 };
 

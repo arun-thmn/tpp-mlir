@@ -111,7 +111,7 @@ struct RewriteBatchMatmulToMatmul
           tilingOpts);
       if (failed(tilingResult))
         return signalPassFailure();
-      rewriter.replaceOp(batchMatmulOp, tilingResult->replacements);
+      rewriter.replaceOp(batchMatmulOp, tilingResult->mergeResult.replacements);
     });
 
     // Step2:
@@ -125,8 +125,7 @@ struct RewriteBatchMatmulToMatmul
         patterns.getContext());
     ctx.getOrLoadDialect<tensor::TensorDialect>()->getCanonicalizationPatterns(
         patterns);
-    if (failed(applyPatternsAndFoldGreedily(getOperation(),
-                                            std::move(patterns)))) {
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
       return signalPassFailure();
     }
   }

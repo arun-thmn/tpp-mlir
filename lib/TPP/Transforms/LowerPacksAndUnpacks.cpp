@@ -35,7 +35,7 @@ namespace {
 template <typename OpTy>
 static SmallVector<int64_t> getTileSizes(OpTy packingOp,
                                          bool isConsumer = false) {
-  static_assert(llvm::is_one_of<OpTy, tensor::PackOp, tensor::UnPackOp>::value,
+  static_assert(llvm::is_one_of<OpTy, linalg::PackOp, linalg::UnPackOp>::value,
                 "applies to only pack or unpack operations");
   SmallVector<int64_t> tiledDims = llvm::to_vector(packingOp.getInnerDimsPos());
   assert(!tiledDims.empty());
@@ -43,7 +43,7 @@ static SmallVector<int64_t> getTileSizes(OpTy packingOp,
     int64_t upTo = *std::min_element(tiledDims.begin(), tiledDims.end());
     return SmallVector<int64_t>(upTo, 1);
   }
-  if (std::is_same<OpTy, tensor::PackOp>::value) {
+  if (std::is_same<OpTy, linalg::PackOp>::value) {
     int64_t upTo = packingOp.getDestType().getRank() - 2;
     return SmallVector<int64_t>(upTo, 1);
   }
@@ -71,20 +71,20 @@ static FailureOr<scf::SCFTilingResult> tileOp(RewriterBase &rewriter,
 
 // Fuse producer and consumer pack. Standalone packs are tiled into 2d tiles.
 static void fuseOrTilePacks(RewriterBase &rewriter, FunctionOpInterface func) {
-  SmallVector<tensor::PackOp> chainedPackOps;
-  SmallVector<tensor::PackOp> otherPacks;
-  SmallVector<tensor::UnPackOp> unPacks;
-  func->walk<WalkOrder::PostOrder>([&](tensor::PackOp consumerPackOp) {
+  SmallVector<linalg::PackOp> chainedPackOps;
+  SmallVector<linalg::PackOp> otherPacks;
+  SmallVector<linalg::UnPackOp> unPacks;
+  func->walk<WalkOrder::PostOrder>([&](linalg::PackOp consumerPackOp) {
     Value source = consumerPackOp.getSource();
-    tensor::PackOp producerPackOp =
-        dyn_cast_or_null<tensor::PackOp>(source.getDefiningOp());
+    linalg::PackOp producerPackOp =
+        dyn_cast_or_null<linalg::PackOp>(source.getDefiningOp());
     if (producerPackOp)
       chainedPackOps.push_back(consumerPackOp);
     else
       otherPacks.push_back(consumerPackOp);
   });
   func->walk<WalkOrder::PostOrder>(
-      [&](tensor::UnPackOp unpackOp) { unPacks.push_back(unpackOp); });
+      [&](linalg::UnPackOp unpackOp) { unPacks.push_back(unpackOp); });
 
   // Tile and fuse.
   for (auto consumerPackOp : chainedPackOps) {
@@ -98,7 +98,7 @@ static void fuseOrTilePacks(RewriterBase &rewriter, FunctionOpInterface func) {
                tileSizes);
     if (failed(tilingResult))
       continue;
-    auto tiledPack = dyn_cast<tensor::PackOp>(tilingResult->tiledOps.back());
+    auto tiledPack = dyn_cast<linalg::PackOp>(tilingResult->tiledOps.back());
     assert(tiledPack);
     // Step 3. Fuse consumer and producer.
     auto forLoops =
@@ -112,7 +112,7 @@ static void fuseOrTilePacks(RewriterBase &rewriter, FunctionOpInterface func) {
             forLoops);
     if (!fusedProducer)
       continue;
-    rewriter.replaceOp(consumerPackOp, tilingResult->replacements);
+    rewriter.replaceOp(consumerPackOp, tilingResult->mergeResult.replacements);
   }
 
   // Tile packs.
@@ -124,7 +124,7 @@ static void fuseOrTilePacks(RewriterBase &rewriter, FunctionOpInterface func) {
         rewriter, cast<TilingInterface>(packOp.getOperation()), tileSizes);
     if (failed(tilingResult))
       continue;
-    rewriter.replaceOp(packOp, tilingResult->replacements);
+    rewriter.replaceOp(packOp, tilingResult->mergeResult.replacements);
   }
 
   // Tile unpacks.
@@ -136,16 +136,16 @@ static void fuseOrTilePacks(RewriterBase &rewriter, FunctionOpInterface func) {
         rewriter, cast<TilingInterface>(unPackOp.getOperation()), tileSizes);
     if (failed(tilingResult))
       continue;
-    rewriter.replaceOp(unPackOp, tilingResult->replacements);
+    rewriter.replaceOp(unPackOp, tilingResult->mergeResult.replacements);
   }
 }
 
-// A wrapper pattern that calls linalg::lowerPack on tensor::PackOp. It lowers
-// a tensor.pack op to tensor.pad + tensor.expand_shape + linalg.transpose ops.
-struct LowerPackPattern : public OpRewritePattern<tensor::PackOp> {
-  using OpRewritePattern<tensor::PackOp>::OpRewritePattern;
+// A wrapper pattern that calls linalg::lowerPack on linalg::PackOp. It lowers
+// a linalg.pack op to tensor.pad + tensor.expand_shape + linalg.transpose ops.
+struct LowerPackPattern : public OpRewritePattern<linalg::PackOp> {
+  using OpRewritePattern<linalg::PackOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(tensor::PackOp op,
+  LogicalResult matchAndRewrite(linalg::PackOp op,
                                 PatternRewriter &rewriter) const override {
     FailureOr<linalg::LowerPackResult> res = linalg::lowerPack(rewriter, op);
     if (failed(res)) {
@@ -156,13 +156,13 @@ struct LowerPackPattern : public OpRewritePattern<tensor::PackOp> {
   }
 };
 
-// A wrapper pattern that calls linalg::lowerUnPack on tensor::UnPackOp. It
-// lowers a tensor.unpack op to tensor.empty + linalg.transpose +
+// A wrapper pattern that calls linalg::lowerUnPack on linalg::UnPackOp. It
+// lowers a linalg.unpack op to tensor.empty + linalg.transpose +
 // tensor.collapse_shape + tensor.extract_slice ops.
-struct LowerUnPackPattern : public OpRewritePattern<tensor::UnPackOp> {
-  using OpRewritePattern<tensor::UnPackOp>::OpRewritePattern;
+struct LowerUnPackPattern : public OpRewritePattern<linalg::UnPackOp> {
+  using OpRewritePattern<linalg::UnPackOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(tensor::UnPackOp op,
+  LogicalResult matchAndRewrite(linalg::UnPackOp op,
                                 PatternRewriter &rewriter) const override {
     if (failed(linalg::lowerUnPack(rewriter, op))) {
       return rewriter.notifyMatchFailure(
@@ -186,27 +186,27 @@ class LowerPacksAndUnPacks
       RewritePatternSet patterns(ctx);
       linalgx::utils::populateScfForToForAllRewritePattern(patterns);
       scf::ForallOp::getCanonicalizationPatterns(patterns, ctx);
-      (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+      (void)applyPatternsGreedily(getOperation(), std::move(patterns));
     }
 
     // Step3. Simplify packs and unpacks.
     {
       RewritePatternSet patterns(ctx);
       mlir::tpp::populateSimplifyPacking(patterns);
-      (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+      (void)applyPatternsGreedily(getOperation(), std::move(patterns));
     }
 
     // Step4. Generalize to linalg.
     {
       RewritePatternSet patterns(ctx);
       patterns.add<LowerPackPattern, LowerUnPackPattern>(ctx);
-      (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+      (void)applyPatternsGreedily(getOperation(), std::move(patterns));
     }
 
     // Step5. Fallback on tile by one + generalization patterns.
     {
       IRRewriter rewriter(ctx);
-      getOperation()->walk([&](tensor::UnPackOp unPackOp) {
+      getOperation()->walk([&](linalg::UnPackOp unPackOp) {
         scf::SCFTilingOptions unpackTilingOptions;
         SmallVector<int64_t> tiles(unPackOp.getDestType().getRank(), 1);
         unpackTilingOptions.setTileSizes(getAsIndexOpFoldResult(ctx, tiles));
@@ -215,9 +215,9 @@ class LowerPacksAndUnPacks
             unpackTilingOptions);
         if (failed(tilingResult))
           return signalPassFailure();
-        rewriter.replaceOp(unPackOp, tilingResult->replacements);
+        rewriter.replaceOp(unPackOp, tilingResult->mergeResult.replacements);
       });
-      getOperation()->walk([&](tensor::PackOp packOp) {
+      getOperation()->walk([&](linalg::PackOp packOp) {
         SmallVector<int64_t> tiles(packOp.getSourceType().getRank(), 1);
         scf::SCFTilingOptions packTilingOptions;
         packTilingOptions.setTileSizes(getAsIndexOpFoldResult(ctx, tiles));
@@ -226,14 +226,13 @@ class LowerPacksAndUnPacks
             packTilingOptions);
         if (failed(tilingResult))
           return signalPassFailure();
-        rewriter.replaceOp(packOp, tilingResult->replacements);
+        rewriter.replaceOp(packOp, tilingResult->mergeResult.replacements);
       });
       RewritePatternSet patterns(&getContext());
       patterns.add<linalg::DecomposeOuterUnitDimsUnPackOpPattern,
                    linalg::DecomposeOuterUnitDimsPackOpPattern>(&getContext());
       tensor::populateMergeConsecutiveInsertExtractSlicePatterns(patterns);
-      if (failed(applyPatternsAndFoldGreedily(getOperation(),
-                                              std::move(patterns)))) {
+      if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
         return signalPassFailure();
       }
     }
@@ -246,7 +245,7 @@ class LowerPacksAndUnPacks
           ->getCanonicalizationPatterns(patterns);
       ctx->getLoadedDialect<tensor::TensorDialect>()
           ->getCanonicalizationPatterns(patterns);
-      (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+      (void)applyPatternsGreedily(getOperation(), std::move(patterns));
     }
   }
 };

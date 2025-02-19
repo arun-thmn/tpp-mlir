@@ -23,6 +23,7 @@
 #include "llvm/Target/TargetOptions.h"
 
 #include "TPP/Transforms/Utils/TensorInit.h"
+#include "libxsmm.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -191,7 +192,7 @@ static LogicalResult prepareMLIRKernel(Operation *op,
 
 std::unique_ptr<llvm::Module> lowerToLLVMIR(Operation *module,
                                             llvm::LLVMContext &llvmContext) {
-  // Default lowering for mlir-cpu-runner
+  // Default lowering for mlir-runner
   auto llvmModule = translateModuleToLLVMIR(module, llvmContext);
   assert(llvmModule);
 
@@ -270,6 +271,9 @@ int main(int argc, char **argv) {
   if (failed(validateInput()))
     return 1;
 
+  // Initialize the underlying platform
+  // TODO: Move this to use the target information flags
+  libxsmm_init();
   // Initialize the LLVM machinery
   llvm::InitLLVM y(argc, argv);
   llvm::InitializeNativeTarget();

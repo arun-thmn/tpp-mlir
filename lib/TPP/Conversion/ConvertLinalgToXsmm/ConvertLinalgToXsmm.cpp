@@ -585,7 +585,7 @@ static FailureOr<BrgemmInfo> checkAccess(linalg::LinalgOp linalgOp, unsigned m,
     strideB = (*stridesOnB)[*batchPosCodomainB];
   }
 
-  auto loops = linalgOp.computeStaticLoopSizes();
+  auto loops = linalgOp.getStaticLoopRanges();
   int64_t batchVal = (batchPos) ? loops[batchPos.value()] : 0;
 
   bool isVnni = vnni::utils::isInVnniLayout(linalgOp);
@@ -847,7 +847,7 @@ void ConvertLinalgToXsmm::runOnOperation() {
   SmallVector<StringRef> skipPatterns(skipOperations.begin(),
                                       skipOperations.end());
   tpp::populateLinalgToXsmmPatterns(patterns, skipPatterns);
-  if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns))))
+  if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
     return signalPassFailure();
 }
 

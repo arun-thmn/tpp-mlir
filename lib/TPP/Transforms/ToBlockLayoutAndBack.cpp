@@ -58,13 +58,13 @@ static Value toPackLayoutImpl(OpBuilder &builder, Location loc, Value input,
   SmallVector<int64_t> staticTiles;
   dispatchIndexOpFoldResults(tiles, dynamicTiles, staticTiles);
   RankedTensorType result =
-      tensor::PackOp::inferPackedType(cast<RankedTensorType>(input.getType()),
+      linalg::PackOp::inferPackedType(cast<RankedTensorType>(input.getType()),
                                       staticTiles, innerDimsPos, outerDimsPerm);
   auto inputType = cast<RankedTensorType>(input.getType());
   ArrayRef<int64_t> shape = result.getShape();
   Value output =
       builder.create<tensor::EmptyOp>(loc, shape, inputType.getElementType());
-  return builder.create<tensor::PackOp>(loc, input, output, innerDimsPos, tiles,
+  return builder.create<linalg::PackOp>(loc, input, output, innerDimsPos, tiles,
                                         /*paddingValue=*/std::nullopt,
                                         outerDimsPerm);
 }
@@ -76,7 +76,7 @@ static Value toUnPackLayoutImpl(OpBuilder &builder, Location loc, Value input,
                                 ArrayRef<int64_t> outerDimsPerm) {
   if (auto fillOp = output.getDefiningOp<linalg::FillOp>())
     output = fillOp.getOutputs()[0];
-  return builder.create<tensor::UnPackOp>(loc, input, output, innerDimPos,
+  return builder.create<linalg::UnPackOp>(loc, input, output, innerDimPos,
                                           tiles, outerDimsPerm);
 }
 
@@ -562,7 +562,7 @@ struct PackMatmul : public tpp::impl::PackMatmulBase<PackMatmul> {
     linalg::populateBlockPackMatmulPatterns(patterns, packControlFn);
     linalg::populateLinalgDeGeneralizationPatterns(patterns);
 
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+    (void)applyPatternsGreedily(getOperation(), std::move(patterns));
   }
 };
 
@@ -598,7 +598,7 @@ struct PackConv2DNchwFchw
     MLIRContext *ctx = getOperation().getContext();
     RewritePatternSet patterns(ctx);
     patterns.add<DoItOnConv2DNchwFchw>(ctx, blockingFactors);
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+    (void)applyPatternsGreedily(getOperation(), std::move(patterns));
   }
 };
 
@@ -634,7 +634,7 @@ struct PackConv2DNhwcHwcf
     MLIRContext *ctx = getOperation().getContext();
     RewritePatternSet patterns(ctx);
     patterns.add<DoItOnConv2DNhwcHwcf>(ctx, blockingFactors);
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+    (void)applyPatternsGreedily(getOperation(), std::move(patterns));
   }
 };
 
@@ -674,8 +674,8 @@ struct PackVNNI : public tpp::impl::PackVNNIBase<PackVNNI> {
     RewritePatternSet patterns(ctx);
     linalg::populateLinalgDeGeneralizationPatterns(patterns);
     patterns.add<VNNIOnMatmul, VNNIOnBRGemm>(ctx);
-    tensor::populateSimplifyPackAndUnpackPatterns(patterns);
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+    linalg::populateSimplifyPackAndUnpackPatterns(patterns);
+    (void)applyPatternsGreedily(getOperation(), std::move(patterns));
   }
 };
 
@@ -686,29 +686,29 @@ struct PropagatePackUnPack
     RewritePatternSet patterns(ctx);
     linalg::populateDataLayoutPropagationPatterns(
         patterns, [](OpOperand *operand) { return true; });
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+    (void)applyPatternsGreedily(getOperation(), std::move(patterns));
   }
 };
 
-// Fold a tensor.unpack into an scf.parallel_insert.
+// Fold a linalg.unpack into an scf.parallel_insert.
 //
 // The pattern looks like:
 //
-// %p = tensor.pack %a into %b
+// %p = linalg.pack %a into %b
 // %l = scf.forall ... iter_args(%0 = %p) {
 // ...
 // }
-// %u = tensor.unpack %l into %c
+// %u = linalg.unpack %l into %c
 //
 // We will rewrite as:
 //
 // %l = scf.forall ... iter_args(%0 = %a) {
 // ...
 // }
-struct FoldUnPackIntoInsertSlice : public OpRewritePattern<tensor::UnPackOp> {
-  using OpRewritePattern<tensor::UnPackOp>::OpRewritePattern;
+struct FoldUnPackIntoInsertSlice : public OpRewritePattern<linalg::UnPackOp> {
+  using OpRewritePattern<linalg::UnPackOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(tensor::UnPackOp unPackOp,
+  LogicalResult matchAndRewrite(linalg::UnPackOp unPackOp,
                                 PatternRewriter &rewriter) const override {
     if (!unPackOp.getOuterDimsPerm().empty())
       return failure();
@@ -731,8 +731,8 @@ struct FoldUnPackIntoInsertSlice : public OpRewritePattern<tensor::UnPackOp> {
     // Create a new scf.forall operation, updating its output.
     Value loopOperand =
         forallOp.getTiedOpOperand(forallOp->getResult(0))->get();
-    tensor::PackOp packOp =
-        dyn_cast_or_null<tensor::PackOp>(loopOperand.getDefiningOp());
+    linalg::PackOp packOp =
+        dyn_cast_or_null<linalg::PackOp>(loopOperand.getDefiningOp());
     if (!packOp)
       return failure();
     Value newLoopOperand = packOp.getSource();
@@ -823,7 +823,7 @@ struct SimplifyAndCanonicalizePack
     MLIRContext *ctx = getOperation().getContext();
     RewritePatternSet patterns(ctx);
     tpp::populateSimplifyPacking(patterns);
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+    (void)applyPatternsGreedily(getOperation(), std::move(patterns));
   }
 };
 
@@ -831,10 +831,11 @@ struct SimplifyAndCanonicalizePack
 
 void mlir::tpp::populateSimplifyPacking(RewritePatternSet &patterns) {
   MLIRContext *ctx = patterns.getContext();
-  tensor::populateSimplifyPackAndUnpackPatterns(patterns);
+  linalg::populateSimplifyPackAndUnpackPatterns(patterns);
+  linalg::populateFoldPackUnpackIntoTensorEmptyPatterns(patterns);
   tensor::populateFoldTensorEmptyPatterns(patterns);
-  tensor::PackOp::getCanonicalizationPatterns(patterns, ctx);
-  tensor::UnPackOp::getCanonicalizationPatterns(patterns, ctx);
+  linalg::PackOp::getCanonicalizationPatterns(patterns, ctx);
+  linalg::UnPackOp::getCanonicalizationPatterns(patterns, ctx);
   tensor::ExtractSliceOp::getCanonicalizationPatterns(patterns, ctx);
   tensor::CollapseShapeOp::getCanonicalizationPatterns(patterns, ctx);
   tensor::CastOp::getCanonicalizationPatterns(patterns, ctx);
@@ -849,6 +850,8 @@ void mlir::tpp::populateSimplifyPacking(RewritePatternSet &patterns) {
       patterns, [](OpOperand *operand) {
         return isa<tensor::ExpandShapeOp>(operand->get().getDefiningOp());
       });
+  ctx->getLoadedDialect<linalg::LinalgDialect>()->getCanonicalizationPatterns(
+      patterns);
   ctx->getLoadedDialect<tensor::TensorDialect>()->getCanonicalizationPatterns(
       patterns);
   patterns.add<FoldUnPackIntoInsertSlice>(ctx);
