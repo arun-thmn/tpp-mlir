@@ -64,22 +64,21 @@ struct LinalgOpTiling : OpRewritePattern<BrgemmOp> {
         std::count(brgemmIteratorTypes.begin(), brgemmIteratorTypes.end(),
                    utils::IteratorType::reduction);
 
-    if (reductionCount == 0)
+    if (reductionCount == 0 || reductionCount > 3)
       return rewriter.notifyMatchFailure(brgemmOp,
-                                         "Matmul operation not supported yet");
+                                         "Excepted GEMM like operation");
 
     if (reductionCount == 1)
       return rewriter.notifyMatchFailure(
           brgemmOp, "Batch matmul operation not supported yet");
 
-    if (reductionCount > 3)
-      return rewriter.notifyMatchFailure(brgemmOp,
-                                         "The operation is not a gemm");
+    auto shapeTypeLhs =
+        dyn_cast<ShapedType>(brgemmOp.getOperand(0).getType());
+    auto shapeTypeRhs =
+        dyn_cast<ShapedType>(brgemmOp.getOperand(1).getType());
 
-    auto shapeLhs =
-        dyn_cast<MemRefType>(brgemmOp.getOperand(0).getType()).getShape();
-    auto shapeRhs =
-        dyn_cast<MemRefType>(brgemmOp.getOperand(1).getType()).getShape();
+    auto shapeLhs = shapeTypeLhs.getShape();
+    auto shapeRhs = shapeTypeRhs.getShape();
 
     if (reductionCount == 2 &&
         (shapeLhs.size() != 3 || shapeRhs.size() != 3))
@@ -98,10 +97,8 @@ struct LinalgOpTiling : OpRewritePattern<BrgemmOp> {
     FailureOr<linalg::TiledLinalgOp> tiledOp;
 
     // Get rank and map of linalg op
-    unsigned rankA =
-        (dyn_cast<ShapedType>((brgemmOp->getOperand(0)).getType())).getRank();
-    unsigned rankB =
-        (dyn_cast<ShapedType>((brgemmOp->getOperand(1)).getType())).getRank();
+    unsigned rankA = shapeTypeLhs.getRank();
+    unsigned rankB = shapeTypeRhs.getRank();
     AffineMap mapA =
         brgemmOp.getMatchingIndexingMap(&brgemmOp->getOpOperand(0));
     AffineMap mapB =
@@ -109,13 +106,11 @@ struct LinalgOpTiling : OpRewritePattern<BrgemmOp> {
 
     if (vnniOpt) {
       // k-tile size adjusted based on the vnni layout for bf16 type
-      auto shape =
-          dyn_cast<MemRefType>(brgemmOp.getOperand(0).getType()).getShape();
-      auto kTileVnni = options.registerTileShape[2] / shape[3];
+      auto kTileVnni = options.registerTileShape[2] / shapeLhs[3];
 
       // Note: We make an assumption that the k tile size is divisible to
       // the powers of 2.
-      if (kTileVnni < 1 || (options.registerTileShape[2] % shape[3] != 0))
+      if (kTileVnni < 1 || (options.registerTileShape[2] % shapeLhs[3] != 0))
         return rewriter.notifyMatchFailure(
             brgemmOp, "Failed matching K tile size for batch reduce operation "
                       "with vnni layout. K tile size should be >= vnni layout "
@@ -144,7 +139,6 @@ struct LinalgOpTiling : OpRewritePattern<BrgemmOp> {
       tilingOptions.setTileSizes({tileSizes[0], tileSizes[1], tileSizes[2],
                                   tileSizes[3], tileSizes[4]});
       tilingOptions.setInterchange({dimM, dimN, dimBR, dimK, vnniDim});
-      tiledOp = linalg::tileLinalgOp(rewriter, brgemmOp, tilingOptions);
 
     } else {
 
@@ -176,9 +170,9 @@ struct LinalgOpTiling : OpRewritePattern<BrgemmOp> {
       tilingOptions.setTileSizes(
           {tileSizes[0], tileSizes[1], tileSizes[2], tileSizes[3]});
       tilingOptions.setInterchange({dimM, dimN, dimBR, dimK});
-      tiledOp = linalg::tileLinalgOp(rewriter, brgemmOp, tilingOptions);
     }
 
+    tiledOp = linalg::tileLinalgOp(rewriter, brgemmOp, tilingOptions);
     if (failed(tiledOp)) {
       return failure();
     }
