@@ -76,13 +76,13 @@ struct LinalgOpTiling : OpRewritePattern<BrgemmOp> {
       return rewriter.notifyMatchFailure(brgemmOp,
                                          "The operation is not a gemm");
 
-    auto tensorShapeLhs =
+    auto shapeLhs =
         dyn_cast<MemRefType>(brgemmOp.getOperand(0).getType()).getShape();
-    auto tensorShapeRhs =
+    auto shapeRhs =
         dyn_cast<MemRefType>(brgemmOp.getOperand(1).getType()).getShape();
 
     if (reductionCount == 2 &&
-        (tensorShapeLhs.size() != 3 || tensorShapeRhs.size() != 3))
+        (shapeLhs.size() != 3 || shapeRhs.size() != 3))
       return rewriter.notifyMatchFailure(
           brgemmOp, "Invalid rank for batch reduce operation");
 
@@ -115,11 +115,11 @@ struct LinalgOpTiling : OpRewritePattern<BrgemmOp> {
 
       // Note: We make an assumption that the k tile size is divisible to
       // the powers of 2.
-      if (kTileVnni < 1 || (kTileVnni % 2 != 0))
+      if (kTileVnni < 1 || (options.registerTileShape[2] % shape[3] != 0))
         return rewriter.notifyMatchFailure(
             brgemmOp, "Failed matching K tile size for batch reduce operation "
                       "with vnni layout. K tile size should be >= vnni layout "
-                      "and divisible by 2");
+                      "and divisible by vnni layout");
 
       // Calculating the tile sizes based on affine map for bf16 type with vnni
       auto vnniDim =
@@ -164,7 +164,7 @@ struct LinalgOpTiling : OpRewritePattern<BrgemmOp> {
           brgemmIteratorTypes[dimBR] != mlir::utils::IteratorType::reduction ||
           brgemmIteratorTypes[dimK] != mlir::utils::IteratorType::reduction)
         return rewriter.notifyMatchFailure(
-            brgemmOp, "Failed macthing with iterator types and dimension");
+            brgemmOp, "Failed matching with iterator types and dimension");
 
       // To set the loop interchange options
       SmallVector<int64_t> tileSizes(4);
