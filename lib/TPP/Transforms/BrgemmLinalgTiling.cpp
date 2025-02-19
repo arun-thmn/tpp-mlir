@@ -136,8 +136,7 @@ struct LinalgOpTiling : OpRewritePattern<BrgemmOp> {
       tileSizes[dimK] = kTileVnni;
       tileSizes[vnniDim] = 0;
 
-      tilingOptions.setTileSizes({tileSizes[0], tileSizes[1], tileSizes[2],
-                                  tileSizes[3], tileSizes[4]});
+      tilingOptions.setTileSizes(tileSizes);
       tilingOptions.setInterchange({dimM, dimN, dimBR, dimK, vnniDim});
 
     } else {
@@ -167,8 +166,7 @@ struct LinalgOpTiling : OpRewritePattern<BrgemmOp> {
       tileSizes[dimN] = options.registerTileShape[1];
       tileSizes[dimK] = options.registerTileShape[2];
 
-      tilingOptions.setTileSizes(
-          {tileSizes[0], tileSizes[1], tileSizes[2], tileSizes[3]});
+      tilingOptions.setTileSizes(tileSizes);
       tilingOptions.setInterchange({dimM, dimN, dimBR, dimK});
     }
 
