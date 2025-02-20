@@ -35,6 +35,34 @@ module {
 
 // -----
 
+module {
+  func.func @brgemm_tensor_type_tiling(%arg0: tensor<128x256x512xf32>, %arg1: tensor<128x512x256xf32>, %arg2: tensor<256x256xf32>) -> tensor<256x256xf32> {
+    %0 = linalg.batch_reduce_matmul ins(%arg0, %arg1 : tensor<128x256x512xf32>, tensor<128x512x256xf32>) outs(%arg2 : tensor<256x256xf32>) -> tensor<256x256xf32>
+    return %0 : tensor<256x256xf32>
+  }
+}
+
+
+// CONF1-LABEL: func.func @brgemm_tensor_type_tiling
+// CONF1-DAG: %[[C0:.+]] = arith.constant 0 : index
+// CONF1-DAG: %[[C256:.+]] = arith.constant 256 : index
+// CONF1-DAG: %[[C8:.+]] = arith.constant 8 : index
+// CONF1-DAG: %[[C32:.+]] = arith.constant 32 : index
+// CONF1-DAG: %[[C128:.+]] = arith.constant 128 : index
+// CONF1-DAG: %[[C1:.+]] = arith.constant 1 : index
+// CONF1-DAG: %[[C512:.+]] = arith.constant 512 : index
+// CONF1: %0 = scf.for %[[I:.+]] = %[[C0]] to %[[C256]] step %[[C8]] iter_args(%arg4 = %arg2) -> (tensor<256x256xf32>) {
+// CONF1-NEXT:  %1 = scf.for %[[J:.+]] = %[[C0]] to %[[C256]] step %[[C32]] iter_args(%arg6 = %arg4) -> (tensor<256x256xf32>) {
+// CONF1-NEXT:   %2 = scf.for %[[K:.+]] = %[[C0]] to %[[C128]] step %[[C1]] iter_args(%arg8 = %arg6) -> (tensor<256x256xf32>) {
+// CONF1-NEXT:    %3 = scf.for %[[L:.+]] = %[[C0]] to %[[C512]] step %[[C1]] iter_args(%arg10 = %arg8) -> (tensor<256x256xf32>) {
+// CONF1-NEXT:     %extracted_slice = tensor.extract_slice %arg0[%[[K]], %[[I]], %[[L]]] [1, 8, 1] [1, 1, 1] : tensor<128x256x512xf32> to tensor<1x8x1xf32>
+// CONF1-NEXT:     %extracted_slice_0 = tensor.extract_slice %arg1[%[[K]], %[[L]], %[[J]]] [1, 1, 32] [1, 1, 1] : tensor<128x512x256xf32> to tensor<1x1x32xf32>
+// CONF1-NEXT:     %extracted_slice_1 = tensor.extract_slice %arg10[%[[I]], %[[J]]] [8, 32] [1, 1] : tensor<256x256xf32> to tensor<8x32xf32>
+// CONF1-NEXT:     %4 = linalg.batch_reduce_matmul ins(%extracted_slice, %extracted_slice_0 : tensor<1x8x1xf32>, tensor<1x1x32xf32>) outs(%extracted_slice_1 : tensor<8x32xf32>) -> tensor<8x32xf32>
+// CONF1-NEXT:     %inserted_slice = tensor.insert_slice %4 into %arg10[%[[I]], %[[J]]] [8, 32] [1, 1] : tensor<8x32xf32> into tensor<256x256xf32>
+
+// -----
+
 #map = affine_map<(d0, d1, d2, d3, d4) -> (d0, d2, d4, d1)>
 #map1 = affine_map<(d0, d1, d2, d3, d4) -> (d0, d4, d3, d1)>
 #map2 = affine_map<(d0, d1, d2, d3, d4) -> (d2, d3)>
@@ -121,20 +149,6 @@ module {
 // CONF2-NEXT:     %subview_2 = memref.subview %0[%[[K]], %[[L]], %[[J]], 0] [1, 16, 32, 2] [1, 1, 1, 1] : memref<16x32x64x2xbf16> to memref<1x16x32x2xbf16, strided<[4096, 128, 2, 1], offset: ?>>
 // CONF2-NEXT:     %subview_3 = memref.subview %subview[%[[I]], %[[J]]] [32, 32] [1, 1] : memref<64x64xbf16, strided<[64, 1], offset: ?>> to memref<32x32xbf16, strided<[64, 1], offset: ?>>
 // CONF2-NEXT:     linalg.generic
-
-// -----
-
-module {
-  func.func @brgemm_tensor_type_no_tiling(%arg0: tensor<128x256x512xf32>, %arg1: tensor<128x512x256xf32>, %arg2: tensor<256x256xf32>) -> tensor<256x256xf32> {
-    %0 = linalg.batch_reduce_matmul ins(%arg0, %arg1 : tensor<128x256x512xf32>, tensor<128x512x256xf32>) outs(%arg2 : tensor<256x256xf32>) -> tensor<256x256xf32>
-    return %0 : tensor<256x256xf32>
-  }
-}
-
-
-// CONF1-LABEL: func.func @brgemm_tensor_type_no_tiling
-// CONF1-NOT: scf.for
-// CONF2-NOT: scf.for
 
 // -----
 

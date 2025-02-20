@@ -48,8 +48,6 @@ struct LinalgOpTiling : OpRewritePattern<BrgemmOp> {
 
   LogicalResult matchAndRewrite(BrgemmOp brgemmOp,
                                 PatternRewriter &rewriter) const override {
-    if (!brgemmOp.hasPureBufferSemantics())
-      return failure();
 
     // Check whether the tile sizes are valid
     if (options.registerTileShape.size() != 3)
@@ -177,7 +175,7 @@ struct LinalgOpTiling : OpRewritePattern<BrgemmOp> {
     if (failed(tiledOp)) {
       return failure();
     }
-    rewriter.replaceOp(brgemmOp, tiledOp->op->getResults());
+    rewriter.replaceOp(brgemmOp, tiledOp->tensorResults);
 
     return success();
   }
