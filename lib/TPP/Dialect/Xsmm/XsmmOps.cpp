@@ -23,7 +23,6 @@ using namespace mlir::xsmm;
 namespace {
 constexpr std::string_view INPUTS = "inputs";
 constexpr std::string_view DATA_TYPE = "data_type";
-constexpr std::string_view B_TYPE = "b_type";
 constexpr std::string_view C_TYPE = "c_type";
 constexpr std::string_view FLAGS_NAME = "flags";
 constexpr std::string_view KIND = "kind";
@@ -204,25 +203,13 @@ static void printerDataTypeImpl(OpAsmPrinter &printer, OpTy op) {
 
 
 template <typename OpTy>
-static void printerBTypeImpl(OpAsmPrinter &printer, OpTy op) {
-  printer << B_TYPE << " = ";
-  auto dataType = op.getDataType();
-  printer << xsmm::stringifyDataType(dataType) << " ";
-  printer.printOptionalAttrDict(
-      op->getAttrs(),
-      /*elidedAttrs=*/{B_TYPE,C_TYPE, DATA_TYPE, FLAGS_NAME, INPUTS, KIND, FLAGS_NAME,
-                       UNARY_FLAGS_NAME, BINARY_FLAGS_NAME, BINARY_KIND,
-                       UNARY_KIND});
-}
-
-template <typename OpTy>
 static void printerCTypeImpl(OpAsmPrinter &printer, OpTy op) {
   printer << C_TYPE << " = ";
   auto dataType = op.getDataType();
   printer << xsmm::stringifyDataType(dataType) << " ";
   printer.printOptionalAttrDict(
       op->getAttrs(),
-      /*elidedAttrs=*/{B_TYPE,C_TYPE, DATA_TYPE, FLAGS_NAME, INPUTS, KIND, FLAGS_NAME,
+      /*elidedAttrs=*/{C_TYPE, DATA_TYPE, FLAGS_NAME, INPUTS, KIND, FLAGS_NAME,
                        UNARY_FLAGS_NAME, BINARY_FLAGS_NAME, BINARY_KIND,
                        UNARY_KIND});
 }

@@ -79,15 +79,14 @@ void replaceOpWithUnary(RewriterBase &rewriter, Operation *operation,
                                                unaryInfo.ldi, unaryInfo.ldo});
   auto dtype = xsmm::utils::getDataType(rewriter, operands.back().getType());
   //TODO: Needed to be re-checked with respect to operands
-  auto btype = xsmm::utils::getDataType(rewriter, operands.back().getType());
   auto ctype = xsmm::utils::getDataType(rewriter, operands.back().getType());
 
   Value dispatched = rewriter.create<xsmm::UnaryDispatchOp>(
-      loc, integer64, kind, dims, flags, dtype, btype, ctype);
+      loc, integer64, kind, dims, flags, dtype, ctype);
   SmallVector<Value> invokeOperands;
   invokeOperands.push_back(dispatched);
   invokeOperands.append(operands.begin(), operands.end());
-  rewriter.replaceOpWithNewOp<xsmm::UnaryOp>(operation, dtype, btype, ctype, kind,
+  rewriter.replaceOpWithNewOp<xsmm::UnaryOp>(operation, dtype, ctype, kind,
                                              invokeOperands);
 }
 
@@ -382,7 +381,7 @@ SmallVector<Type> extractOperandTypes(OpBuilder &builder,
 
 SmallVector<Value> getXsmmOperands(OpBuilder &builder, Location loc,
                                    SmallVector<XsmmOperand> operands,
-                                   IntegerAttr dataTypeAttr,
+                                   IntegerAttr dataTypeAttr, IntegerAttr cTypeAttr,
                                    Operation *parentOp) {
   SmallVector<Value> res;
   for (XsmmOperand operand : operands) {
@@ -409,7 +408,7 @@ SmallVector<Value> getXsmmOperands(OpBuilder &builder, Location loc,
 }
 
 func::CallOp buildXsmmCall(RewriterBase &rewriter, XsmmCallType callType,
-                           Location loc, DataTypeAttr dtype,
+                           Location loc, DataTypeAttr dtype, DataTypeAttr ctype,
                            SmallVector<XsmmOperand> operands, TypeRange results,
                            FlatSymbolRefAttr fnName, Operation *parentOp,
                            Operation *insertBefore) {
@@ -430,7 +429,7 @@ func::CallOp buildXsmmCall(RewriterBase &rewriter, XsmmCallType callType,
   }
 
   SmallVector<Value> finalOperands =
-      xsmm::utils::getXsmmOperands(rewriter, loc, operands, dtype, parentOp);
+      xsmm::utils::getXsmmOperands(rewriter, loc, operands, dtype, dtype, parentOp);
   return rewriter.create<func::CallOp>(loc, fnName.getValue(), results,
                                        finalOperands);
 }

@@ -118,7 +118,7 @@ typedef struct {
 typedef std::variant<int64_t, Value, XsmmCall> XsmmOperand;
 
 func::CallOp buildXsmmCall(RewriterBase &rewriter, XsmmCallType callType,
-                           Location loc, DataTypeAttr dtype,
+                           Location loc, DataTypeAttr dtype, DataTypeAttr ctype,
                            SmallVector<XsmmOperand> operands, TypeRange results,
                            FlatSymbolRefAttr fnName, Operation *parentOp,
                            Operation *insertBefore);

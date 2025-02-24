@@ -38,6 +38,8 @@ getUnaryXSMMCalls(PatternRewriter &rewriter, xsmm::UnaryInfo &unaryInfo,
 
   auto dtype =
       xsmm::utils::getDataType(rewriter, unaryOp->getOperand(0).getType());
+  auto ctype =
+      xsmm::utils::getDataType(rewriter, unaryOp->getOperand(0).getType());
 
   SmallVector<xsmm::utils::XsmmOperand> dispatchOperands;
   xsmm::UnaryKindAttr kind =
@@ -45,23 +47,24 @@ getUnaryXSMMCalls(PatternRewriter &rewriter, xsmm::UnaryInfo &unaryInfo,
   dispatchOperands.push_back(dyn_cast<IntegerAttr>(kind).getInt());
 
   dispatchOperands.push_back(dyn_cast<DataTypeAttr>(dtype).getInt());
+  dispatchOperands.push_back(dyn_cast<DataTypeAttr>(ctype).getInt());
 
   dispatchOperands.append(SmallVector<xsmm::utils::XsmmOperand>{
       unaryInfo.m, unaryInfo.n, unaryInfo.ldi, unaryInfo.ldo});
   dispatchOperands.push_back(unaryFlag);
 
   auto dispatchCall = xsmm::utils::buildXsmmCall(
-      rewriter, xsmm::utils::XsmmCallType::DISPATCH, loc, dtype,
+      rewriter, xsmm::utils::XsmmCallType::DISPATCH, loc, dtype, ctype,
       dispatchOperands, IntegerType::get(rewriter.getContext(), 64),
       SymbolRefAttr::get(unaryOp->getContext(), dispatchName), unaryOp,
       nullptr);
   SmallVector<xsmm::utils::XsmmOperand> operandRange{
-      dyn_cast<DataTypeAttr>(dtype).getInt(),
+      dyn_cast<DataTypeAttr>(dtype).getInt(), 
       xsmm::utils::XsmmCall{xsmm::utils::XsmmCallType::DISPATCH,
                             dispatchCall.getResult(0)},
       input->getOperand(0), output->getOperand(1)};
   auto invokeCall = xsmm::utils::buildXsmmCall(
-      rewriter, xsmm::utils::XsmmCallType::INVOKE, loc, dtype, operandRange,
+      rewriter, xsmm::utils::XsmmCallType::INVOKE, loc, dtype, ctype, operandRange,
       TypeRange(), SymbolRefAttr::get(unaryOp->getContext(), invokeName),
       unaryOp, output);
   return std::make_pair(&*dispatchCall, &*invokeCall);

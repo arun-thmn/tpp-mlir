@@ -67,7 +67,7 @@ struct IntelAMXTileConfig : OpRewritePattern<InvokeOpTy> {
             dyn_cast<DispatchOpTy>(op.getOperand(0).getDefiningOp())
                 .getInputs()),
         rewriter.getArrayAttr(attributesSetup),
-        xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()), xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()), xsmm::utils::getDataType(rewriter, op.getOperand(2).getType()));
+        xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()), xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()));
 
     SmallVector<Attribute> attributesReset = *brgemmFlags;
     attributesReset.push_back(xsmm::GemmFlagsAttr::get(
@@ -80,7 +80,7 @@ struct IntelAMXTileConfig : OpRewritePattern<InvokeOpTy> {
             dyn_cast<DispatchOpTy>(op.getOperand(0).getDefiningOp())
                 .getInputs()),
         rewriter.getArrayAttr(attributesReset),
-        xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()), xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()), xsmm::utils::getDataType(rewriter, op.getOperand(2).getType()));
+        xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()),  xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()));
 
     SmallVector<Attribute> attributesBrgemm = *brgemmFlags;
     attributesBrgemm.push_back(xsmm::GemmFlagsAttr::get(
@@ -107,7 +107,7 @@ struct IntelAMXTileConfig : OpRewritePattern<InvokeOpTy> {
 //TODO: RE-CHECK OPERANDS
     rewriter.create<InvokeOpTy>(
         op.getLoc(),
-        xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()), xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()), xsmm::utils::getDataType(rewriter, op.getOperand(2).getType()),
+        xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()), xsmm::utils::getDataType(rewriter, op.getOperand(1).getType()),
         invokeOperands);
 
     ValueRange tileResetInputs{alloca};
