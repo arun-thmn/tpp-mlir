@@ -68,7 +68,7 @@ private:
     pm.addNestedPass<gpu::GPUModuleOp>(arith::createArithExpandOpsPass());
     pm.addNestedPass<gpu::GPUModuleOp>(createLowerAffinePass());
     pm.addNestedPass<gpu::GPUModuleOp>(createConvertVectorToSCFPass());
-    pm.addNestedPass<gpu::GPUModuleOp>(createConvertSCFToCFPass());
+    pm.addNestedPass<gpu::GPUModuleOp>(createSCFToControlFlowPass());
 
     pm.addNestedPass<gpu::GPUModuleOp>(createConvertNVGPUToNVVMPass());
     pm.addNestedPass<gpu::GPUModuleOp>(createConvertGpuOpsToNVVMOps());
@@ -77,6 +77,7 @@ private:
     pm.addNestedPass<gpu::GPUModuleOp>(createConvertFuncToLLVMPass());
     pm.addNestedPass<gpu::GPUModuleOp>(createArithToLLVMConversionPass());
     pm.addNestedPass<gpu::GPUModuleOp>(createConvertIndexToLLVMPass());
+    pm.addNestedPass<gpu::GPUModuleOp>(createUBToLLVMConversionPass());
 
     GpuNVVMAttachTargetOptions nvvmTargetOptions;
     nvvmTargetOptions.triple = gpuTriple;
@@ -85,7 +86,6 @@ private:
     pm.addPass(createGpuNVVMAttachTarget(nvvmTargetOptions));
 
     // Create CUDA kernels.
-    pm.addNestedPass<gpu::GPUModuleOp>(createStripDebugInfoPass());
     pm.addNestedPass<gpu::GPUModuleOp>(createCanonicalizerPass());
     pm.addNestedPass<gpu::GPUModuleOp>(createCSEPass());
     pm.addNestedPass<gpu::GPUModuleOp>(createReconcileUnrealizedCastsPass());

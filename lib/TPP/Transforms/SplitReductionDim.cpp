@@ -81,7 +81,7 @@ struct SplitContractionReduction
       return rewriter.notifyMatchFailure(linalgOp,
                                          "failed to tile contraction");
 
-    rewriter.replaceOp(linalgOp, tilingResult->replacements);
+    rewriter.replaceOp(linalgOp, tilingResult->mergeResult.replacements);
 
     return success();
   }
@@ -104,8 +104,7 @@ struct SplitReductionDim
     patterns.add<SplitContractionReduction>(ctx, options);
     GreedyRewriteConfig config;
     config.strictMode = GreedyRewriteStrictness::ExistingOps;
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
-                                       config);
+    (void)applyPatternsGreedily(getOperation(), std::move(patterns), config);
   }
 };
 

@@ -156,7 +156,7 @@ struct CombineXsmmOpPass
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
     populateCombinePatterns(patterns);
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+    (void)applyPatternsGreedily(getOperation(), std::move(patterns));
   }
 };
 } // namespace
