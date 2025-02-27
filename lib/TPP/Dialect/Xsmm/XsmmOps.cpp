@@ -74,7 +74,7 @@ static ParseResult parseDataTypeImpl(OpAsmParser &parser,
   if (parseEnum(bType, parser))
     return failure();
   result.addAttribute(B_TYPE,
-                      DataTypeAttr::get(builder.getContext(), bType));
+                      DataTypeAttr::get(builder.getContext(), bType));*/
 
 
   if (parser.parseKeyword(C_TYPE) || parser.parseEqual())
@@ -83,7 +83,7 @@ static ParseResult parseDataTypeImpl(OpAsmParser &parser,
   if (parseEnum(cType, parser))
     return failure();
   result.addAttribute(C_TYPE,
-                      DataTypeAttr::get(builder.getContext(), cType));*/
+                      DataTypeAttr::get(builder.getContext(), cType));
 
   result.addTypes(builder.getIntegerType(64));
 

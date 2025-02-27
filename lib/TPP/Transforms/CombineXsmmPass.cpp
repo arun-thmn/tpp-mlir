@@ -75,7 +75,7 @@ struct CombineXsmmOp : public OpRewritePattern<xsmm::BrgemmOp> {
     auto dtype =
         xsmm::utils::getDataType(rewriter, brgemmOp.getOperand(0).getType());
     auto ctype =
-        xsmm::utils::getDataType(rewriter, brgemmOp.getOperand(0).getType());
+        xsmm::utils::getDataType(rewriter, brgemmOp.getOperand(2).getType());
 
     IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
 

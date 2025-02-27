@@ -1,3 +1,4 @@
+
 //===- CRunnerUtils.cpp - Utils for MLIR execution ------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
@@ -76,10 +77,10 @@ void *get_base_ptr(const libxsmm_datatype dType, void *alignedPtr,
 
 } // namespace
 
-extern "C" void xsmm_gemm_invoke(const libxsmm_datatype dType,  const libxsmm_datatype cType, int64_t addr,
+extern "C" void xsmm_gemm_invoke(const libxsmm_datatype dType, int64_t addr,
                                  void *alignedPtrA, int64_t offsetA,
                                  void *alignedPtrB, int64_t offsetB,
-                                 void *alignedPtrC, int64_t offsetC) {
+                                 void *alignedPtrC, int64_t offsetC, const libxsmm_datatype ctype) {
   libxsmm_xmmfunction sgemm;
   libxsmm_gemm_param gemm_param;
 
@@ -92,10 +93,10 @@ extern "C" void xsmm_gemm_invoke(const libxsmm_datatype dType,  const libxsmm_da
   sgemm.gemm(&gemm_param);
 }
 
-extern "C" int64_t xsmm_gemm_dispatch(const libxsmm_datatype dtype,  const libxsmm_datatype ctype, int64_t m,
+extern "C" int64_t xsmm_gemm_dispatch(const libxsmm_datatype dtype, int64_t m,
                                       int64_t n, int64_t k, int64_t lda,
                                       int64_t ldb, int64_t ldc,
-                                      const libxsmm_gemm_flags flags) {
+                                      const libxsmm_gemm_flags flags, const libxsmm_datatype ctype) {
   // std::cout << "lda: " << lda << "\n";
   // std::cout << "ldb: " << ldb << "\n";
   // std::cout << "ldc: " << ldc << "\n";
@@ -141,9 +142,9 @@ extern "C" int64_t xsmm_gemm_dispatch(const libxsmm_datatype dtype,  const libxs
 
 extern "C" int64_t
 xsmm_unary_dispatch(const libxsmm_meltw_unary_type op_type,
-                    const libxsmm_datatype dtype,  const libxsmm_datatype ctype, int64_t m, int64_t n,
+                    const libxsmm_datatype dtype, int64_t m, int64_t n,
                     int64_t ldi, int64_t ldo,
-                    const libxsmm_meltw_unary_flags unary_flags) {
+                    const libxsmm_meltw_unary_flags unary_flags, const libxsmm_datatype ctype) {
   // std::cout << "ldi: " << ldi << "\n";
   // std::cout << "ldo: " << ldo << "\n";
   // std::cout << "m: " << m << "\n";
@@ -155,7 +156,6 @@ xsmm_unary_dispatch(const libxsmm_meltw_unary_type op_type,
   // Row major to col major swap m with n.
   unary_shape.m = static_cast<libxsmm_blasint>(n);
   unary_shape.n = static_cast<libxsmm_blasint>(m);
-  //TODO: Re-check for the status
   unary_shape.in0_type = dtype;
   // Retarget computation type from bf16 to f32 due to missing hardware support.
   // Copy and Zero should remain in BF16 to avoid useless up/down casts
@@ -181,14 +181,13 @@ xsmm_unary_dispatch(const libxsmm_meltw_unary_type op_type,
 
 extern "C" int64_t
 xsmm_binary_dispatch(const libxsmm_meltw_binary_type op_type,
-                     const libxsmm_datatype dtype,  const libxsmm_datatype ctype, int64_t m, int64_t n,
+                     const libxsmm_datatype dtype, int64_t m, int64_t n,
                      int64_t ldiLhs, int64_t ldiRhs, int64_t ldo,
-                     const libxsmm_meltw_binary_flags flags) {
+                     const libxsmm_meltw_binary_flags flags, const libxsmm_datatype ctype) {
   libxsmm_meltw_binary_shape binary_shape;
   // Row major to col major swap m with n.
   binary_shape.m = static_cast<libxsmm_blasint>(n);
   binary_shape.n = static_cast<libxsmm_blasint>(m);
-   //TODO: Re-check for the status
   binary_shape.in0_type = dtype;
   binary_shape.in1_type = dtype;
   // Retarget computation type from bf16 to f32 due to missing hardware support.
@@ -213,9 +212,9 @@ xsmm_binary_dispatch(const libxsmm_meltw_binary_type op_type,
 }
 
 extern "C" int64_t xsmm_intel_amx_tile_config_dispatch(
-    const libxsmm_datatype dtype,  const libxsmm_datatype ctype, int64_t m, int64_t n, int64_t k, int64_t lda,
+    const libxsmm_datatype dtype, int64_t m, int64_t n, int64_t k, int64_t lda,
     int64_t ldb, int64_t ldc, int64_t stride_a, int64_t stride_b,
-    const libxsmm_gemm_flags flags) {
+    const libxsmm_gemm_flags flags, const libxsmm_datatype ctype) {
   libxsmm_blasint m_int = m;
   libxsmm_blasint n_int = n;
   libxsmm_blasint k_int = k;
@@ -247,12 +246,11 @@ extern "C" int64_t xsmm_intel_amx_tile_config_dispatch(
   return reinterpret_cast<int64_t>(sgemm);
 }
 
-extern "C" void xsmm_unary_invoke(const libxsmm_datatype dType,  const libxsmm_datatype cType, int64_t addr,
+extern "C" void xsmm_unary_invoke(const libxsmm_datatype dType, int64_t addr,
                                   void *alignedPtrIn, int64_t offsetIn,
-                                  void *alignedPtrOut, int64_t offsetOut) {
+                                  void *alignedPtrOut, int64_t offsetOut, const libxsmm_datatype ctype) {
   libxsmm_meltw_unary_param param;
 
-   //TODO: Re-check for the status
   param.in.primary = get_base_ptr(dType, alignedPtrIn, offsetIn);
   param.out.primary = get_base_ptr(dType, alignedPtrOut, offsetOut);
 
@@ -261,10 +259,10 @@ extern "C" void xsmm_unary_invoke(const libxsmm_datatype dType,  const libxsmm_d
   kernel(&param);
 }
 
-extern "C" void xsmm_binary_invoke(const libxsmm_datatype dType,  const libxsmm_datatype cType, int64_t addr,
+extern "C" void xsmm_binary_invoke(const libxsmm_datatype dType, int64_t addr,
                                    void *alignedPtrLhs, int64_t offsetLhs,
                                    void *alignedPtrRhs, int64_t offsetRhs,
-                                   void *alignedPtrOut, int64_t offsetOut) {
+                                   void *alignedPtrOut, int64_t offsetOut, const libxsmm_datatype ctype) {
   libxsmm_meltw_binary_param param;
 
   param.in0.primary = get_base_ptr(dType, alignedPtrLhs, offsetLhs);
@@ -276,9 +274,9 @@ extern "C" void xsmm_binary_invoke(const libxsmm_datatype dType,  const libxsmm_
   kernel(&param);
 }
 
-extern "C" void xsmm_unary_scalar_invoke(const libxsmm_datatype dType,  const libxsmm_datatype cType,
+extern "C" void xsmm_unary_scalar_invoke(const libxsmm_datatype dType,
                                          int64_t addr, float input,
-                                         void *alignedOut, int64_t offsetOut) {
+                                         void *alignedOut, int64_t offsetOut, const libxsmm_datatype ctype) {
   libxsmm_meltwfunction_unary kernel =
       reinterpret_cast<libxsmm_meltwfunction_unary>(addr);
   libxsmm_meltw_unary_param param;
@@ -288,11 +286,11 @@ extern "C" void xsmm_unary_scalar_invoke(const libxsmm_datatype dType,  const li
   kernel(&param);
 }
 
-extern "C" void xsmm_brgemm_invoke(const libxsmm_datatype dType,  const libxsmm_datatype cType, int64_t addr,
+extern "C" void xsmm_brgemm_invoke(const libxsmm_datatype dType, int64_t addr,
                                    void *alignedPtrA, int64_t offsetA,
                                    void *alignedPtrB, int64_t offsetB,
                                    void *alignedPtrC, int64_t offsetC,
-                                   int64_t numBatches) {
+                                   int64_t numBatches, const libxsmm_datatype ctype) {
   libxsmm_xmmfunction sgemm;
   libxsmm_gemm_param gemm_param;
 
@@ -308,11 +306,11 @@ extern "C" void xsmm_brgemm_invoke(const libxsmm_datatype dType,  const libxsmm_
   sgemm.gemm(&gemm_param);
 }
 
-extern "C" int64_t xsmm_brgemm_dispatch(const libxsmm_datatype dtype,  const libxsmm_datatype ctype, int64_t m,
+extern "C" int64_t xsmm_brgemm_dispatch(const libxsmm_datatype dtype, int64_t m,
                                         int64_t n, int64_t k, int64_t lda,
                                         int64_t ldb, int64_t ldc,
                                         int64_t stride_a, int64_t stride_b,
-                                        const libxsmm_gemm_flags flags) {
+                                        const libxsmm_gemm_flags flags, const libxsmm_datatype ctype) {
   // std::cout << "lda: " << lda << "\n";
   // std::cout << "lbd: " << ldb << "\n";
   // std::cout << "ldc: " << ldc << "\n";
@@ -340,7 +338,7 @@ extern "C" int64_t xsmm_brgemm_dispatch(const libxsmm_datatype dtype,  const lib
   l_shape.ldc = ldc_int;
   l_shape.a_in_type = dtype;
   l_shape.b_in_type = dtype;
-  l_shape.out_type = dtype;
+  l_shape.out_type = ctype;
   // Retarget computation type from bf16 to f32 due to missing hardware support.
   l_shape.comp_type =
       dtype == LIBXSMM_DATATYPE_BF16 ? LIBXSMM_DATATYPE_F32 : dtype;
@@ -353,12 +351,9 @@ extern "C" int64_t xsmm_brgemm_dispatch(const libxsmm_datatype dtype,  const lib
   auto sgemm =
       libxsmm_dispatch_brgemm(l_shape, l_flags, l_prefetch_flags, l_brconfig);
   if (!sgemm) {
-    fprintf(stderr, "failed to generate brgemm func\n");
-    fprintf(stderr, "dtype: %u\n", dtype);
-    fprintf(stderr, "ctype: %u\n", ctype);
-    fprintf(stderr, "mdtype: %u\n", m);
-    fprintf(stderr, "ndtype: %u\n", n);
-    fprintf(stderr, "kdtype: %u\n", k);
+    fprintf(stdout, "failed to generate brgemm func\n");
+    fprintf(stdout, "dtype: %u\n", dtype);
+    fprintf(stdout, "ctype: %u\n", ctype);
     printXsmmStruct(l_shape);
     printXsmmStruct(l_brconfig);
     exit(-1);
@@ -367,12 +362,12 @@ extern "C" int64_t xsmm_brgemm_dispatch(const libxsmm_datatype dtype,  const lib
   return reinterpret_cast<int64_t>(sgemm);
 }
 
-extern "C" void xsmm_fused_brgemm_invoke(const libxsmm_datatype dType,  const libxsmm_datatype cType,
+extern "C" void xsmm_fused_brgemm_invoke(const libxsmm_datatype dType,
                                          int64_t addr, void *alignedPtrA,
                                          int64_t offsetA, void *alignedPtrB,
                                          int64_t offsetB, void *alignedPtrC,
                                          int64_t offsetC, void *alignedPtrD,
-                                         int64_t offsetD, int64_t numBatches) {
+                                         int64_t offsetD, int64_t numBatches, const libxsmm_datatype ctype) {
   libxsmm_xmmfunction sgemm;
   libxsmm_gemm_ext_param gemm_param;
 
@@ -390,14 +385,14 @@ extern "C" void xsmm_fused_brgemm_invoke(const libxsmm_datatype dType,  const li
 }
 
 extern "C" int64_t
-xsmm_fused_brgemm_dispatch(const libxsmm_datatype data_type,  const libxsmm_datatype c_type, int64_t m,
+xsmm_fused_brgemm_dispatch(const libxsmm_datatype data_type, int64_t m,
                            int64_t n, int64_t k, int64_t lda, int64_t ldb,
                            int64_t ldc, int64_t stride_a, int64_t stride_b,
                            const libxsmm_gemm_flags gemm_flags,
                            const libxsmm_meltw_unary_flags unary_flags,
                            const libxsmm_meltw_unary_type unary_op_type,
                            const libxsmm_meltw_binary_flags binary_flags,
-                           const libxsmm_meltw_binary_type binary_op_type) {
+                           const libxsmm_meltw_binary_type binary_op_type, const libxsmm_datatype ctype) {
   // std::cout << "lda: " << lda << "\n";
   // std::cout << "lbd: " << ldb << "\n";
   // std::cout << "ldc: " << ldc << "\n";
@@ -452,20 +447,20 @@ xsmm_fused_brgemm_dispatch(const libxsmm_datatype data_type,  const libxsmm_data
 
   auto sgemm = libxsmm_dispatch_brgemm_ext(l_shape, l_flags, l_prefetch_flags,
                                            l_brconfig, l_argops, l_postops);
-  if (!sgemm) {
-    fprintf(stderr, "failed to generate fused brgemm func\n");
-    fprintf(stderr, "data_type: %u\n", data_type);
+  //if (!sgemm) {
+    fprintf(stdout, "failed to generate fused brgemm func\n");
+    fprintf(stdout, "data_type: %u\n", data_type);
     printXsmmStruct(l_shape);
     printXsmmStruct(l_brconfig);
-    exit(-1);
-  }
+    //exit(-1);
+  //}
 
   return reinterpret_cast<int64_t>(sgemm);
 }
 
 extern "C" MLIR_RUNNERUTILS_EXPORT void
-xsmm_intel_amx_tile_config_invoke(const libxsmm_datatype dType,  const libxsmm_datatype cType, int64_t addr,
-                                  void *tileState, int64_t offset) {
+xsmm_intel_amx_tile_config_invoke(const libxsmm_datatype dType, int64_t addr,
+                                  void *tileState, int64_t offset, const libxsmm_datatype ctype) {
   libxsmm_xmmfunction cfg_tr;
 
   libxsmm_tilecfg_state *l_tilestate =
@@ -520,4 +515,4 @@ printXsmmStruct(const libxsmm_gemm_batch_reduce_config &brgemmConfig,
   fprintf(outfile, "br_stride_a_hint: %d\n", brgemmConfig.br_stride_a_hint);
   fprintf(outfile, "br_stride_b_hint: %d\n", brgemmConfig.br_stride_b_hint);
   fprintf(outfile, "br_unroll_hint: %d\n", brgemmConfig.br_unroll_hint);
-}
+                }

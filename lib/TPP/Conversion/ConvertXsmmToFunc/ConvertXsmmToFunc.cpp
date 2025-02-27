@@ -17,6 +17,8 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
+#include <iostream>
+
 using namespace mlir;
 using namespace mlir::xsmm;
 
@@ -303,8 +305,8 @@ static LogicalResult buildDispatchOp(RewriterBase &rewriter, OpTy dispatchOp,
       SymbolRefAttr::get(rewriter.getContext(), funcName);
 
   ModuleOp module = dispatchOp->template getParentOfType<ModuleOp>();
-  SmallVector<Value, 10> dispatchOperands;
-  SmallVector<Type, 10> dispatchOperandTypes;
+  SmallVector<Value, 11> dispatchOperands;
+  SmallVector<Type, 11> dispatchOperandTypes;
   IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
 
   // If `OpTy` is unary or binary we need to dispatch and extra
@@ -337,6 +339,11 @@ static LogicalResult buildDispatchOp(RewriterBase &rewriter, OpTy dispatchOp,
 
   dispatchOperands.push_back(rewriter.create<arith::ConstantOp>(
       loc, integer64, IntegerAttr::get(rewriter.getI64Type(), oredFlag)));
+  dispatchOperandTypes.push_back(integer64);
+
+  
+  dispatchOperands.push_back(rewriter.create<arith::ConstantOp>(
+      loc, integer64, cast<TypedAttr>(dispatchOp.getCTypeAttr())));
   dispatchOperandTypes.push_back(integer64);
 
   if (auto dispatchBrgemmOp = dyn_cast_or_null<xsmm::FusedBrgemmDispatchOp>(

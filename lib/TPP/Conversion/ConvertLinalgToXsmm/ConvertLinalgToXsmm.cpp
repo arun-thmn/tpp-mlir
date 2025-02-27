@@ -446,7 +446,7 @@ static void replaceOpWithGemmLikeOp(RewriterBase &rewriter,
   auto dtype =
       xsmm::utils::getDataType(rewriter, linalgOp.getDpsInits()[0].getType());
   auto ctype =
-      xsmm::utils::getDataType(rewriter, linalgOp.getDpsInits()[0].getType());
+      xsmm::utils::getDataType(rewriter, linalgOp->getOperand(2).getType());
 
   IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
   Location loc = linalgOp.getLoc();
