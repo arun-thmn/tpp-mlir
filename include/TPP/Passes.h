@@ -96,6 +96,10 @@ namespace xegpu {
 class XeGPUDialect;
 } // namespace xegpu
 
+namespace x86vector {
+class X86VectorDialect;
+}
+
 } // namespace mlir
 
 namespace mlir {
