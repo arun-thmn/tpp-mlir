@@ -142,6 +142,7 @@ private:
             BrgemmLinalgTilingOptions{SmallVector<unsigned>{*registerBlocking}}));
         pm.addNestedPass<func::FuncOp>(createLoopInvariantCodeMotionPass());
         pm.addNestedPass<func::FuncOp>(createVectorizationPass());
+	pm.addNestedPass<func::FuncOp>(createBF16DotProduct());
 
         // Please note, canonicalizer should be after hoisting pass because
         // it fuses outer tiling loops and it results in no pattern

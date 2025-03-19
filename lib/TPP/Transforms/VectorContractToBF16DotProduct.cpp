@@ -133,6 +133,14 @@ struct BF16DotProductOp : OpRewritePattern<vector::ContractionOp> {
     int64_t K = lhsType.getDimSize(lhsType.getRank() - 2);
     int64_t vnni = lhsType.getDimSize(lhsType.getRank() - 1);
 
+    if (lhsType.getRank() == 3)
+	    return failure();
+
+    if (K != 1)
+	    return failure();
+
+    if (N != 32)
+	    return failure();
 
     
     auto loops = getNestedLoop(contractOp); 
@@ -217,12 +225,26 @@ struct BF16DotProductOp : OpRewritePattern<vector::ContractionOp> {
 		  auto bcast2 = rewriterNewKForOp.create<vector::BroadcastOp>(
                       kForOp.getLoc(), VectorType::get(16, elem2.getType()), elem2);
 
+		//llvm::SmallVector<int64_t, 16> mask = {0, 32, 1, 32, 2, 32, 3, 32, 4, 32, 5, 32, 6, 32, 7, 32, 8, 32, 9, 32, 10, 32, 11, 32, 12, 32, 13, 32, 14, 32, 15, 32};
+		llvm::SmallVector<int64_t, 16> mask = {0, 32, 1, 33, 2, 34, 3, 35, 4, 36, 5, 37, 6, 38, 7, 39, 8, 40, 9, 41, 10, 42, 11, 43, 12, 44, 13, 45, 14, 46, 15, 47};
+	          llvm::SmallVector<int64_t, 16> mask2 = {32, 0, 32, 1, 32, 2, 32, 3, 32, 4, 32, 5, 32, 6, 32, 7, 32, 8, 32, 9, 32, 10, 32, 11, 32, 12, 32, 13, 32, 14, 32, 15};	
+	      	  //auto maskAttr = rewriter.getI64ArrayAttr(mask);
+
+		  auto maskAttr = mlir::DenseI64ArrayAttr::get(rewriter.getContext(), mask);
+		  auto maskAttr2 = mlir::DenseI64ArrayAttr::get(rewriter.getContext(), mask2);
+
+
 		  mlir::VectorType vecType = mlir::VectorType::get({32}, rewriter.getBF16Type());
 		  llvm::APFloat zeroBF16 = llvm::APFloat::getZero(llvm::APFloat::BFloat());
 		  SmallVector<llvm::APFloat, 32> bf16Values;
 		  bf16Values.resize(32, zeroBF16);
 		  mlir::DenseElementsAttr zeroAttr = mlir::DenseElementsAttr::get(vecType, bf16Values);
 		  auto zeroVec = rewriter.create<mlir::arith::ConstantOp>(kForOp.getLoc(), vecType, zeroAttr);
+
+    // Create vector.shuffle operation
+    		 auto shuffledVector = rewriter.create<vector::ShuffleOp>(kForOp.getLoc(), bcast1, zeroVec, maskAttr);
+		 auto shuffledVector2 = rewriter.create<vector::ShuffleOp>(kForOp.getLoc(), bcast2, shuffledVector, maskAttr2);
+
 
 		  SmallVector<int64_t, 1> offsets_0 = {0};
 		  SmallVector<int64_t, 1> offsets_16 = {16}; // Must be ≤ 16 if inserting vector<16xbf16> into vector<32xbf16>
@@ -231,7 +253,7 @@ struct BF16DotProductOp : OpRewritePattern<vector::ContractionOp> {
 		  auto vect1 = rewriter.create<vector::InsertStridedSliceOp>(kForOp.getLoc(), bcast1, zeroVec, offsets_0, strides);
 		  auto vect2 = rewriter.create<vector::InsertStridedSliceOp>(kForOp.getLoc(), bcast2, vect1, offsets_16, strides);
 
-                  broadcasts.push_back(vect2);
+                  broadcasts.push_back(shuffledVector2);
                 }
 
 
@@ -257,14 +279,23 @@ struct BF16DotProductOp : OpRewritePattern<vector::ContractionOp> {
 
 		
 		mlir::VectorType dstType = mlir::VectorType::get({16}, rewriter.getF32Type());
-		for (int i = 0, k = 0; i < vnni; i++, k = k + M) {
+		/*for (int i = 0, k = 0; i < vnni; i++, k = k + M) {
 			for (int j = 0; j < M; j++) {
 				auto dp = rewriter.create<mlir::x86vector::DotBF16Op>(
       				  kForOp.getLoc(), dstType, iterArgsNewKForOp[j+k], broadcasts[j], broadcasts_b[i]
    				 );
 				bf16DP.push_back(dp);
 			}
-		}
+		}*/
+
+		for (int i = 0, k = 0; i < M; i++, k = k + vnni) {
+                        for (int j = 0; j < vnni; j++) {
+                                auto dp = rewriter.create<mlir::x86vector::DotBF16Op>(
+                                  kForOp.getLoc(), dstType, iterArgsNewKForOp[j+k], broadcasts[i], broadcasts_b[j]
+                                 );
+                                bf16DP.push_back(dp);
+                        }
+                }
 
 
                 rewriterNewKForOp.create<scf::YieldOp>(locNewKForOp,
