@@ -206,8 +206,31 @@ struct BF16DotProductOp : OpRewritePattern<vector::ContractionOp> {
 
 
 
-		SmallVector<Value, 4> broadcasts;
+	SmallVector<Value, 4> broadcasts;
                 for (int i = 0; i < M; i++) {
+
+
+
+			Value indexOp = rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), i);
+                    auto colVec = rewriterNewKForOp.create<vector::LoadOp>(
+                    kForOp.getLoc(), VectorType::get({vnni}, elementType),
+                    lhsClone->getResult(0), ValueRange{c0, indexOp, c0, c0});
+		auto bitcastOp = rewriterNewKForOp.create<vector::BitCastOp>(
+    				kForOp.getLoc(), 
+    				VectorType::get({1}, rewriterNewKForOp.getI32Type()), // Destination type: vector<1xi32>
+    				colVec // Source operand: vector<2xbf16>
+			);
+
+		auto bcast_a1 = rewriterNewKForOp.create<vector::BroadcastOp>(
+                      kForOp.getLoc(), VectorType::get(16, rewriterNewKForOp.getI32Type()), bitcastOp);
+
+		auto bitcastOp_1 = rewriterNewKForOp.create<vector::BitCastOp>(
+                                kForOp.getLoc(),
+                                VectorType::get({32}, rewriterNewKForOp.getBF16Type()), // Destination type: vector<1xi32>
+                                bcast_a1 // Source operand: vector<2xbf16>
+                        );
+
+
                   auto elem1 = rewriterNewKForOp.create<memref::LoadOp>(
                       kForOp.getLoc(), lhsClone->getResult(0),
                       ValueRange{
@@ -253,7 +276,7 @@ struct BF16DotProductOp : OpRewritePattern<vector::ContractionOp> {
 		  auto vect1 = rewriter.create<vector::InsertStridedSliceOp>(kForOp.getLoc(), bcast1, zeroVec, offsets_0, strides);
 		  auto vect2 = rewriter.create<vector::InsertStridedSliceOp>(kForOp.getLoc(), bcast2, vect1, offsets_16, strides);
 
-                  broadcasts.push_back(shuffledVector2);
+                  broadcasts.push_back(bitcastOp_1);
                 }
 
 
@@ -279,14 +302,6 @@ struct BF16DotProductOp : OpRewritePattern<vector::ContractionOp> {
 
 		
 		mlir::VectorType dstType = mlir::VectorType::get({16}, rewriter.getF32Type());
-		/*for (int i = 0, k = 0; i < vnni; i++, k = k + M) {
-			for (int j = 0; j < M; j++) {
-				auto dp = rewriter.create<mlir::x86vector::DotBF16Op>(
-      				  kForOp.getLoc(), dstType, iterArgsNewKForOp[j+k], broadcasts[j], broadcasts_b[i]
-   				 );
-				bf16DP.push_back(dp);
-			}
-		}*/
 
 		for (int i = 0, k = 0; i < M; i++, k = k + vnni) {
                         for (int j = 0; j < vnni; j++) {
