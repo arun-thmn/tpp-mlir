@@ -1,4 +1,5 @@
-//===-HoistVectorTransfers.cpp -----------------------------------------*-
+//===-VectorContractToBF16DotProduct.cpp
+//-----------------------------------------*-
 // C++-*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
@@ -15,14 +16,14 @@
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/X86Vector/X86VectorDialect.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/Vector/Transforms/LoweringPatterns.h"
 #include "mlir/Dialect/Vector/Transforms/VectorRewritePatterns.h"
+#include "mlir/Dialect/X86Vector/X86VectorDialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-#include "mlir/Dialect/Vector/IR/VectorOps.h"
 
 namespace mlir {
 namespace tpp {
@@ -117,74 +118,138 @@ struct BF16DotProductOp : OpRewritePattern<vector::ContractionOp> {
     auto vectorReadOpLhs = readOps[0];
     auto vectorReadOpRhs = readOps[1];
 
-    auto subViews = getReadOperands(readOps);
-    auto subviews = *subViews;
-    auto subviewOpLhs = subviews[0];
-    auto subviewOpRhs = subviews[1];
+    // Check whether the operand of vector transfer read is a subview
+    auto readOpSubviews = getReadOperands(readOps);
+    if (failed(readOpSubviews))
+      return rewriter.notifyMatchFailure(
+          contractOp, "Vector read op operands are not a subview");
+
+    auto subviews = *readOpSubviews;
     auto subviewOpAcc = subviews[2];
-    auto elementType = (cast<MemRefType>(subviewOpAcc.getType())).getElementType();
+
+    // Check the operation type MatMul, B-MatMul, or BR-MatMul (FP32/BF16)
+    SmallVector<vector::IteratorType> contractIteratorTypes =
+        contractOp.getIteratorTypesArray();
+    int reductionCount =
+        std::count(contractIteratorTypes.begin(), contractIteratorTypes.end(),
+                   vector::IteratorType::reduction);
+
+    if (reductionCount == 0)
+      return rewriter.notifyMatchFailure(contractOp,
+                                         "Matmul operation not supported yet");
+
+    if (reductionCount == 1)
+      return rewriter.notifyMatchFailure(
+          contractOp, "Batch matmul operation not supported yet");
+
+    if (reductionCount == 2)
+      return rewriter.notifyMatchFailure(
+          contractOp, "Batch reduce matmul operation without vnni layout");
+
+    if (reductionCount > 3)
+      return rewriter.notifyMatchFailure(
+          contractOp, "The vector contract operation is not a gemm");
 
     auto lhsType = dyn_cast<ShapedType>(vectorReadOpLhs.getType());
     auto rhsType = dyn_cast<ShapedType>(vectorReadOpRhs.getType());
     auto accType = dyn_cast<ShapedType>(vectorReadOpAcc.getType());
 
+    if (reductionCount == 3 &&
+        (lhsType.getRank() != 4 || rhsType.getRank() != 4))
+      return rewriter.notifyMatchFailure(
+          contractOp,
+          "Invalid rank for batch reduce operation with vnni layout");
+
     int64_t M = accType.getDimSize(0);
-    int64_t N = accType.getDimSize(1); 
+    int64_t N = accType.getDimSize(1);
     int64_t K = lhsType.getDimSize(lhsType.getRank() - 2);
     int64_t vnni = lhsType.getDimSize(lhsType.getRank() - 1);
 
-    if (lhsType.getRank() == 3)
-	    return failure();
-
-    if (K != 1)
-	    return failure();
+    // K tile should be equal to vnni layout
+    if (K != (vnni / 2))
+      return rewriter.notifyMatchFailure(
+          contractOp, "K tile size should be equal to VNNI layout");
 
     if (N != 32)
-	    return failure();
+      return rewriter.notifyMatchFailure(
+          contractOp,
+          "N tile size should be equal to 32 to ensure avx512bf16 dp");
 
-    
-    auto loops = getNestedLoop(contractOp); 
+    if (vnni != 2)
+      return rewriter.notifyMatchFailure(
+          contractOp, "Only VNNI layout=2 is supported, now");
+
+    auto loops = getNestedLoop(contractOp);
+    if (failed(loops))
+      return rewriter.notifyMatchFailure(
+          contractOp, "Invalid loop nest in contract pattern");
+
+    auto checkLoops = checkNestedLoop(*loops, subviews);
+    if (failed(checkLoops))
+      return rewriter.notifyMatchFailure(
+          contractOp, "Loops doesn't match the iv in subviews");
+
     auto nestedLoops = *loops;
     auto kForOp = nestedLoops[0];
     auto reductionForOp = nestedLoops[1];
 
-    // Move the vector transfer read before the reduction and k loop
     rewriter.setInsertionPoint(reductionForOp);
-    
-    SmallVector<OpFoldResult> mixedSizes = {rewriter.getIndexAttr(K),
-                                            rewriter.getIndexAttr(N)};
-    SmallVector<OpFoldResult> mixedStrides = {rewriter.getIndexAttr(1),
-                                              rewriter.getIndexAttr(1)};
+    Value c0 =
+        rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), 0);
+    auto elementType =
+        (cast<MemRefType>(subviewOpAcc.getType())).getElementType();
 
-    SmallVector<Value, 4> subview_2_splits;
+    // Creating further subviews from the C matrix subview
+    llvm::SmallVector<OpFoldResult> sizes = {rewriter.getIndexAttr(K),
+                                             rewriter.getIndexAttr(N)};
+    llvm::SmallVector<OpFoldResult> strides = {rewriter.getIndexAttr(1),
+                                               rewriter.getIndexAttr(1)};
+    llvm::SmallVector<Value, 8> subviewCMatrix;
+    llvm::SmallVector<Value, 8> loopItrArgs;
     for (int i = 0; i < M; i++) {
-      SmallVector<OpFoldResult> mixedOffsets = {
+      SmallVector<OpFoldResult> offsets = {
           rewriter.getIndexAttr(i),
           rewriter.getIndexAttr(0),
       };
-      auto split = rewriter.create<memref::SubViewOp>(
-          reductionForOp.getLoc(), subviewOpAcc, mixedOffsets, mixedSizes, mixedStrides);
-      subview_2_splits.push_back(split);
+      auto newSubview = rewriter.create<memref::SubViewOp>(
+          reductionForOp.getLoc(), subviewOpAcc, offsets, sizes, strides);
+      subviewCMatrix.push_back(newSubview);
+
+      // vector <16xf32> for iterargs to accumulate results in fp32
+      for (int j = 0; j < vnni; j++) {
+        Value indexOp = rewriter.create<arith::ConstantIndexOp>(
+            reductionForOp.getLoc(), j * 16);
+        auto valueCRow = rewriter.create<vector::LoadOp>(
+            reductionForOp.getLoc(), VectorType::get({N / 2}, elementType),
+            newSubview, ValueRange{c0, indexOp});
+        auto bitcast_i16 = rewriter.create<vector::BitCastOp>(
+            reductionForOp.getLoc(),
+            VectorType::get({N / 2}, rewriter.getIntegerType(16)), valueCRow);
+        auto extend_i32 = rewriter.create<arith::ExtUIOp>(
+            reductionForOp.getLoc(),
+            VectorType::get({16}, rewriter.getIntegerType(32)), bitcast_i16);
+        auto cst16 = rewriter.create<arith::ConstantOp>(
+            reductionForOp.getLoc(),
+            rewriter.getIntegerAttr(rewriter.getIntegerType(32), 16));
+        auto shiftOp = rewriter.create<arith::ShLIOp>(
+            reductionForOp.getLoc(),
+            VectorType::get({16}, rewriter.getIntegerType(32)), extend_i32,
+            rewriter.create<vector::BroadcastOp>(
+                reductionForOp.getLoc(),
+                VectorType::get({16}, rewriter.getIntegerType(32)), cst16));
+        auto f32CVector = rewriter.create<vector::BitCastOp>(
+            reductionForOp.getLoc(),
+            VectorType::get({16}, rewriter.getF32Type()), shiftOp);
+        loopItrArgs.push_back(f32CVector);
+      }
     }
 
-    auto elem = rewriter.create<mlir::arith::ConstantOp>(reductionForOp.getLoc(), rewriter.getF32Type(), rewriter.getFloatAttr(rewriter.getF32Type(), 0.0));
-    auto bcast = rewriter.create<vector::BroadcastOp>(
-                      reductionForOp.getLoc(), VectorType::get(16, elem.getType()), elem);
+    SmallVector<Value, 8> bf16DP;
 
-    SmallVector<Value, 4> initAccs;
-    for (int i = 0; i < (M*vnni); i++) {
-      initAccs.push_back(bcast);
-    }
-    
-    Value c0 = rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), 0);
-    Value c1 = rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), 1);
-
-    SmallVector<Value, 4> bf16DP;
     // Code to re-create the reduction and k loop with iter args
     auto newReductionForOp = rewriter.create<scf::ForOp>(
         reductionForOp.getLoc(), reductionForOp.getLowerBound(),
-        reductionForOp.getUpperBound(), reductionForOp.getStep(),
-        initAccs,
+        reductionForOp.getUpperBound(), reductionForOp.getStep(), loopItrArgs,
         [&](OpBuilder &rewriterNewReductionForOp, Location locNewReductionForOp,
             Value ivNewReductionForOp, ValueRange iterArgsNewReductionForOp) {
           auto newKForOp = rewriter.create<scf::ForOp>(
@@ -192,8 +257,6 @@ struct BF16DotProductOp : OpRewritePattern<vector::ContractionOp> {
               kForOp.getStep(), iterArgsNewReductionForOp,
               [&](OpBuilder &rewriterNewKForOp, Location locNewKForOp,
                   Value ivNewKForOp, ValueRange iterArgsNewKForOp) {
-
-
                 IRMapping mapping;
                 mapping.map(
                     vectorReadOpLhs.getSource().getDefiningOp()->getOperand(1),
@@ -204,83 +267,35 @@ struct BF16DotProductOp : OpRewritePattern<vector::ContractionOp> {
                 auto lhsClone = rewriterNewKForOp.clone(
                     *vectorReadOpLhs.getSource().getDefiningOp(), mapping);
 
+                // Memory access for A Matrix into <32xbf16>
+                llvm::SmallVector<Value, 8> vectorA;
 
-
-	SmallVector<Value, 4> broadcasts;
                 for (int i = 0; i < M; i++) {
+                  Value indexOp = rewriter.create<arith::ConstantIndexOp>(
+                      reductionForOp.getLoc(), i);
+                  auto valueA = rewriterNewKForOp.create<vector::LoadOp>(
+                      kForOp.getLoc(), VectorType::get({vnni}, elementType),
+                      lhsClone->getResult(0), ValueRange{c0, indexOp, c0, c0});
+                  auto bitcastValueA =
+                      rewriterNewKForOp.create<vector::BitCastOp>(
+                          kForOp.getLoc(),
+                          VectorType::get({1}, rewriterNewKForOp.getI32Type()),
+                          valueA);
+                  auto broadcastValueA =
+                      rewriterNewKForOp.create<vector::BroadcastOp>(
+                          kForOp.getLoc(),
+                          VectorType::get(16, rewriterNewKForOp.getI32Type()),
+                          bitcastValueA);
+                  auto bitcastValueA_32 =
+                      rewriterNewKForOp.create<vector::BitCastOp>(
+                          kForOp.getLoc(),
+                          VectorType::get({N}, rewriterNewKForOp.getBF16Type()),
+                          broadcastValueA);
 
-
-
-			Value indexOp = rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), i);
-                    auto colVec = rewriterNewKForOp.create<vector::LoadOp>(
-                    kForOp.getLoc(), VectorType::get({vnni}, elementType),
-                    lhsClone->getResult(0), ValueRange{c0, indexOp, c0, c0});
-		auto bitcastOp = rewriterNewKForOp.create<vector::BitCastOp>(
-    				kForOp.getLoc(), 
-    				VectorType::get({1}, rewriterNewKForOp.getI32Type()), // Destination type: vector<1xi32>
-    				colVec // Source operand: vector<2xbf16>
-			);
-
-		auto bcast_a1 = rewriterNewKForOp.create<vector::BroadcastOp>(
-                      kForOp.getLoc(), VectorType::get(16, rewriterNewKForOp.getI32Type()), bitcastOp);
-
-		auto bitcastOp_1 = rewriterNewKForOp.create<vector::BitCastOp>(
-                                kForOp.getLoc(),
-                                VectorType::get({32}, rewriterNewKForOp.getBF16Type()), // Destination type: vector<1xi32>
-                                bcast_a1 // Source operand: vector<2xbf16>
-                        );
-
-
-                  auto elem1 = rewriterNewKForOp.create<memref::LoadOp>(
-                      kForOp.getLoc(), lhsClone->getResult(0),
-                      ValueRange{
-                          c0,
-                          rewriterNewKForOp.create<arith::ConstantIndexOp>(kForOp.getLoc(), i),
-                          c0, c0});
-		  auto elem2 = rewriterNewKForOp.create<memref::LoadOp>(
-                      kForOp.getLoc(), lhsClone->getResult(0),
-                      ValueRange{
-                          c0,
-                          rewriterNewKForOp.create<arith::ConstantIndexOp>(kForOp.getLoc(), i),
-                          c0, c1});
-                  auto bcast1 = rewriterNewKForOp.create<vector::BroadcastOp>(
-                      kForOp.getLoc(), VectorType::get(16, elem1.getType()), elem1);
-		  auto bcast2 = rewriterNewKForOp.create<vector::BroadcastOp>(
-                      kForOp.getLoc(), VectorType::get(16, elem2.getType()), elem2);
-
-		//llvm::SmallVector<int64_t, 16> mask = {0, 32, 1, 32, 2, 32, 3, 32, 4, 32, 5, 32, 6, 32, 7, 32, 8, 32, 9, 32, 10, 32, 11, 32, 12, 32, 13, 32, 14, 32, 15, 32};
-		llvm::SmallVector<int64_t, 16> mask = {0, 32, 1, 33, 2, 34, 3, 35, 4, 36, 5, 37, 6, 38, 7, 39, 8, 40, 9, 41, 10, 42, 11, 43, 12, 44, 13, 45, 14, 46, 15, 47};
-	          llvm::SmallVector<int64_t, 16> mask2 = {32, 0, 32, 1, 32, 2, 32, 3, 32, 4, 32, 5, 32, 6, 32, 7, 32, 8, 32, 9, 32, 10, 32, 11, 32, 12, 32, 13, 32, 14, 32, 15};	
-	      	  //auto maskAttr = rewriter.getI64ArrayAttr(mask);
-
-		  auto maskAttr = mlir::DenseI64ArrayAttr::get(rewriter.getContext(), mask);
-		  auto maskAttr2 = mlir::DenseI64ArrayAttr::get(rewriter.getContext(), mask2);
-
-
-		  mlir::VectorType vecType = mlir::VectorType::get({32}, rewriter.getBF16Type());
-		  llvm::APFloat zeroBF16 = llvm::APFloat::getZero(llvm::APFloat::BFloat());
-		  SmallVector<llvm::APFloat, 32> bf16Values;
-		  bf16Values.resize(32, zeroBF16);
-		  mlir::DenseElementsAttr zeroAttr = mlir::DenseElementsAttr::get(vecType, bf16Values);
-		  auto zeroVec = rewriter.create<mlir::arith::ConstantOp>(kForOp.getLoc(), vecType, zeroAttr);
-
-    // Create vector.shuffle operation
-    		 auto shuffledVector = rewriter.create<vector::ShuffleOp>(kForOp.getLoc(), bcast1, zeroVec, maskAttr);
-		 auto shuffledVector2 = rewriter.create<vector::ShuffleOp>(kForOp.getLoc(), bcast2, shuffledVector, maskAttr2);
-
-
-		  SmallVector<int64_t, 1> offsets_0 = {0};
-		  SmallVector<int64_t, 1> offsets_16 = {16}; // Must be ≤ 16 if inserting vector<16xbf16> into vector<32xbf16>
-		  SmallVector<int64_t, 1> strides = {1};
-
-		  auto vect1 = rewriter.create<vector::InsertStridedSliceOp>(kForOp.getLoc(), bcast1, zeroVec, offsets_0, strides);
-		  auto vect2 = rewriter.create<vector::InsertStridedSliceOp>(kForOp.getLoc(), bcast2, vect1, offsets_16, strides);
-
-                  broadcasts.push_back(bitcastOp_1);
+                  vectorA.push_back(bitcastValueA_32);
                 }
 
-
-		IRMapping rhsMapping;
+                IRMapping rhsMapping;
                 rhsMapping.map(
                     vectorReadOpRhs.getSource().getDefiningOp()->getOperand(1),
                     ivNewReductionForOp);
@@ -290,66 +305,59 @@ struct BF16DotProductOp : OpRewritePattern<vector::ContractionOp> {
                 auto rhsClone = rewriterNewKForOp.clone(
                     *vectorReadOpRhs.getSource().getDefiningOp(), rhsMapping);
 
-		SmallVector<Value, 4> broadcasts_b;
-		for (int i = 0, j = 0; i < vnni; i++, j = j + 16) {
-		    Value indexOp = rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), j);
-		    auto rowVec = rewriterNewKForOp.create<vector::LoadOp>(
-                    kForOp.getLoc(), VectorType::get({N}, elementType),
-                    rhsClone->getResult(0), ValueRange{c0, c0,indexOp, c0});
-
-		     broadcasts_b.push_back(rowVec);
-		}
-
-		
-		mlir::VectorType dstType = mlir::VectorType::get({16}, rewriter.getF32Type());
-
-		for (int i = 0, k = 0; i < M; i++, k = k + vnni) {
-                        for (int j = 0; j < vnni; j++) {
-                                auto dp = rewriter.create<mlir::x86vector::DotBF16Op>(
-                                  kForOp.getLoc(), dstType, iterArgsNewKForOp[j+k], broadcasts[i], broadcasts_b[j]
-                                 );
-                                bf16DP.push_back(dp);
-                        }
+                // Memory access for B Matrix into <32xbf16>
+                llvm::SmallVector<Value, 8> vectorB;
+                for (int i = 0, j = 0; i < vnni; i++, j = j + 16) {
+                  Value indexOp = rewriter.create<arith::ConstantIndexOp>(
+                      reductionForOp.getLoc(), j);
+                  auto valueBRow = rewriterNewKForOp.create<vector::LoadOp>(
+                      kForOp.getLoc(), VectorType::get({N}, elementType),
+                      rhsClone->getResult(0), ValueRange{c0, c0, indexOp, c0});
+                  vectorB.push_back(valueBRow);
                 }
 
+                // Code for x86vector.avx512.dot
+                mlir::VectorType dstType =
+                    mlir::VectorType::get({N / 2}, rewriter.getF32Type());
+                for (int i = 0, k = 0; i < M; i++, k = k + vnni) {
+                  for (int j = 0; j < vnni; j++) {
+                    auto dp = rewriter.create<mlir::x86vector::DotBF16Op>(
+                        kForOp.getLoc(), dstType, iterArgsNewKForOp[j + k],
+                        vectorA[i], vectorB[j]);
+                    bf16DP.push_back(dp);
+                  }
+                }
 
-                rewriterNewKForOp.create<scf::YieldOp>(locNewKForOp,
-                                                       bf16DP);
+                rewriterNewKForOp.create<scf::YieldOp>(locNewKForOp, bf16DP);
               });
+
           rewriterNewReductionForOp.create<scf::YieldOp>(
               locNewReductionForOp, newKForOp.getResults());
         });
 
-    VectorType resultType = VectorType::get({16}, rewriter.getBF16Type());
-
-                for (int i = 0, k = 0; i < M; i++) {
-			for (int j = 0; j < vnni; j++) {
-				Value indexOp = rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), j*16);
-				Value bf16Vector = rewriter.create<x86vector::CvtPackedF32ToBF16Op>(
-        reductionForOp.getLoc(), resultType, newReductionForOp.getResult(k));
-				rewriter.create<vector::StoreOp>(reductionForOp.getLoc(), bf16Vector,
-                                         subview_2_splits[i],
+    // Downconvert <16xf32> to <16xbf16> and store into C Matrix
+    VectorType resultType = VectorType::get({N / 2}, rewriter.getBF16Type());
+    for (int i = 0, k = 0; i < M; i++) {
+      for (int j = 0; j < vnni; j++) {
+        Value indexOp = rewriter.create<arith::ConstantIndexOp>(
+            reductionForOp.getLoc(), j * 16);
+        Value bf16Vector = rewriter.create<x86vector::CvtPackedF32ToBF16Op>(
+            reductionForOp.getLoc(), resultType,
+            newReductionForOp.getResult(k));
+        rewriter.create<vector::StoreOp>(reductionForOp.getLoc(), bf16Vector,
+                                         subviewCMatrix[i],
                                          ValueRange{c0, indexOp});
+        k++;
+      }
+    }
 
-				k++;
-			}
-                }
-
+    // Delete the contract operation
     for (auto result : contractOp->getResults()) {
       for (auto *userOp : result.getUsers()) {
         rewriter.eraseOp(userOp);
       }
     }
     rewriter.eraseOp(contractOp);
-    rewriter.eraseOp(vectorReadOpAcc);
-    rewriter.eraseOp(vectorReadOpLhs);
-    rewriter.eraseOp(vectorReadOpRhs);
-    rewriter.eraseOp(subviewOpLhs);
-    rewriter.eraseOp(subviewOpRhs);
-    rewriter.eraseOp(kForOp);
-    rewriter.eraseOp(reductionForOp);
-
-
     return success();
   }
 };
@@ -358,8 +366,7 @@ void populateBF16DotProductPatterns(RewritePatternSet &patterns) {
   patterns.add<BF16DotProductOp>(patterns.getContext());
 }
 
-struct BF16DotProduct
-    : public impl::BF16DotProductBase<BF16DotProduct> {
+struct BF16DotProduct : public impl::BF16DotProductBase<BF16DotProduct> {
   using BF16DotProductBase::BF16DotProductBase;
 
   void runOnOperation() override {
