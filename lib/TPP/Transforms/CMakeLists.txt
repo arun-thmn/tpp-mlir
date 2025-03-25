@@ -30,6 +30,7 @@ add_mlir_library(TPPTransforms
   VectorContractToOuterproduct.cpp
   HoistVectorTransfers.cpp
   VectorContractToFMA.cpp
+  VectorContractToBF16DotProduct.cpp
 
   ADDITIONAL_HEADER_DIRS
     ${PROJECT_SOURCE_DIR}/include/TPP

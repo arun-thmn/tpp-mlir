@@ -190,6 +190,7 @@ private:
     // Lower to LLVM
     ConvertVectorToLLVMPassOptions options;
     options.amx = vnni::utils::hasAMX();
+    options.x86Vector = true;
     pm.addPass(createConvertVectorToLLVMPass(options));
     pm.addPass(createFinalizeMemRefToLLVMConversionPass());
     pm.addPass(createSCFToControlFlowPass());

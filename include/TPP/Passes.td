@@ -103,6 +103,13 @@ def BrgemmLinalgTiling : Pass<"tile-brgemm-linalg"> {
 }
 
 
+def BF16DotProduct : Pass<"vector-contract-to-bf16dp"> {
+   let summary = "Perform avx512bf16 dot product lowering of vector contraction operation for bf16 type with vnni layout=2";
+   let description = [{
+     Perform avx512bf16 dot product lowering of vector contraction operation for bf16 type with vnni layout=2.
+   }];
+   let dependentDialects = [ "vector::VectorDialect", "scf::SCFDialect", "x86vector::X86VectorDialect" ];
+ }
 
 def ConvertXsmmToFunc : Pass<"convert-xsmm-to-func", "ModuleOp"> {
   let summary = "Convert xsmm to func";
