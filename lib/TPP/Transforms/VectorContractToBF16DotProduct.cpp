@@ -1,14 +1,11 @@
-//===-VectorContractToBF16DotProduct.cpp
-//-----------------------------------------*-
-// C++-*-===//
-//
+//===-------------- VectorContractToBF16DotProduct.cpp ----------*- C++-*-===//
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements tile configuration hoisting on parallel loops.
+// This file implements lowering of vector contraction to x86vector::DotBF16Op.
 //
 //===----------------------------------------------------------------------===//
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -36,11 +33,10 @@ namespace mlir {
 namespace tpp {
 
 static FailureOr<SmallVector<vector::TransferReadOp>>
-getContractOperands(vector::ContractionOp contractOp) {
+getContractProducers(vector::ContractionOp contractOp) {
   SmallVector<vector::TransferReadOp> list;
-  for (int i = 0; i < 3; i++) {
-    auto vectorReadOp =
-        contractOp.getOperand(i).getDefiningOp<vector::TransferReadOp>();
+  for (Value operand : contractOp->getOperands()) {
+    auto vectorReadOp = operand.getDefiningOp<vector::TransferReadOp>();
     if (!vectorReadOp)
       return failure();
     list.push_back(vectorReadOp);
@@ -76,6 +72,7 @@ getNestedLoop(vector::ContractionOp contractOp) {
 
 static LogicalResult checkNestedLoop(SmallVector<scf::ForOp> loops,
                                      SmallVector<memref::SubViewOp> subviews) {
+  assert(loops.size() == 4 && subviews.size() == 3);
   auto subviewOpLhsOffsets = subviews[0].getOffsets();
   auto subviewOpRhsOffsets = subviews[1].getOffsets();
   auto subviewOpAccOffsets = subviews[2].getOffsets();
@@ -109,7 +106,7 @@ struct BF16DotProductOp : OpRewritePattern<vector::ContractionOp> {
     // Check the vector contract operation satisfies the required pattern.
     // Check the Acc, Lhs, and Rhs of contract operation
 
-    auto operands = getContractOperands(contractOp);
+    auto operands = getContractProducers(contractOp);
     if (failed(operands))
       return rewriter.notifyMatchFailure(contractOp,
                                          "Invalid operands for contract op");
@@ -126,6 +123,11 @@ struct BF16DotProductOp : OpRewritePattern<vector::ContractionOp> {
 
     auto subviews = *readOpSubviews;
     auto subviewOpAcc = subviews[2];
+    auto elementType =
+        (cast<MemRefType>(subviewOpAcc.getType())).getElementType();
+
+    if (!elementType.isBF16())
+      return rewriter.notifyMatchFailure(contractOp, "The type is not BF16");
 
     // Check the operation type MatMul, B-MatMul, or BR-MatMul (FP32/BF16)
     SmallVector<vector::IteratorType> contractIteratorTypes =
@@ -196,8 +198,6 @@ struct BF16DotProductOp : OpRewritePattern<vector::ContractionOp> {
     rewriter.setInsertionPoint(reductionForOp);
     Value c0 =
         rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), 0);
-    auto elementType =
-        (cast<MemRefType>(subviewOpAcc.getType())).getElementType();
 
     // Creating further subviews from the C matrix subview
     llvm::SmallVector<OpFoldResult> sizes = {rewriter.getIndexAttr(K),
