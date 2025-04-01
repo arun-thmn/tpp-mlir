@@ -114,6 +114,61 @@ static bool isTransposedMatrix(vector::ContractionOp contractOp) {
   return false;
 }
 
+static bool permutationCheck(vector::ContractionOp contractOp) {
+  SmallVector<AffineMap, 3> contractMaps = contractOp.getIndexingMapsArray();
+  AffineMap mapA = contractMaps[0];
+  AffineMap mapB = contractMaps[1];
+
+  auto inputsMapA = mapA.getNumInputs();
+  SmallVector<AffineDimExpr> inputDims;
+  for (unsigned int i = 0; i < inputsMapA; i++) {
+    auto affineExpr =
+        dyn_cast<AffineDimExpr>(mlir::getAffineDimExpr(i, mapA.getContext()));
+    inputDims.push_back(affineExpr);
+  }
+
+  bool flag = true;
+  // mapA result dims
+  auto resultsMapA = mapA.getNumResults();
+  SmallVector<AffineDimExpr> outputDimsA;
+  for (unsigned int i = 0; i < resultsMapA; i++) {
+    auto affineExpr = dyn_cast<AffineDimExpr>(mapA.getResult(i));
+    outputDimsA.push_back(affineExpr);
+  }
+
+  // We match the pattern {Batch-reduction, vnni, M, N, K} or {Batch-reduction,
+  // M, N, K, vnni} -> {Batch-reduction, M, K, vnni}
+  auto c1 = inputDims[0] == outputDimsA[0];
+  auto c2 = (inputDims[1] == outputDimsA[3]) &&
+            (inputDims[2] == outputDimsA[1]) &&
+            (inputDims[4] == outputDimsA[2]);
+  auto c3 = (inputDims[1] == outputDimsA[1]) &&
+            (inputDims[3] == outputDimsA[2]) &&
+            (inputDims[4] == outputDimsA[3]);
+  flag = flag && (c1 && (c2 || c3));
+
+  // mapB result dims
+  auto resultsMapB = mapB.getNumResults();
+  SmallVector<AffineDimExpr> outputDimsB;
+  for (unsigned int i = 0; i < resultsMapB; i++) {
+    auto affineExpr = dyn_cast<AffineDimExpr>(mapB.getResult(i));
+    outputDimsB.push_back(affineExpr);
+  }
+
+  // We match the pattern {Batch-reduction, vnni, M, N, K} or {Batch-reduction,
+  // M, N, K, vnni} -> {Batch-reduction, K, N, vnni}
+  auto c4 = inputDims[0] == outputDimsB[0];
+  auto c5 = (inputDims[1] == outputDimsB[3]) &&
+            (inputDims[4] == outputDimsB[1]) &&
+            (inputDims[3] == outputDimsB[2]);
+  auto c6 = (inputDims[2] == outputDimsB[2]) &&
+            (inputDims[3] == outputDimsB[1]) &&
+            (inputDims[4] == outputDimsB[3]);
+  flag = flag && (c4 && (c5 || c6));
+
+  return flag;
+}
+
 static LogicalResult checkNestedLoop(SmallVector<scf::ForOp> loops,
                                      SmallVector<memref::SubViewOp> subviews) {
   auto loopSize = loops.size();
@@ -165,10 +220,11 @@ static LogicalResult checkNestedLoop(SmallVector<scf::ForOp> loops,
 ///   arith.shli + vector.bitcast // upconvert to f32 and pass them as iterargs
 ///   scf.for (iterargs = C matrix load as f32) // batch-reduce
 ///    scf.for (iterargs = batch-reduce iterArgs) // k-tile
-///     vector.load // load 2 elements of A matrix and broadcast them into <32xbf16>
-///     vector.load // load elements of B matrix into <32xbf16>
-///     x86vector.avx512.dot %iterargs, %Ax, %Bx // accumulate in f32 (via iterargs)
-///     x86vector.avx512.dot %iterargs, %Ax, %By // accumulate in f32 (via iterargs)
+///     vector.load // load 2 elements of A matrix and broadcast them into
+///     <32xbf16> vector.load // load elements of B matrix into <32xbf16>
+///     x86vector.avx512.dot %iterargs, %Ax, %Bx // accumulate in f32 (via
+///     iterargs) x86vector.avx512.dot %iterargs, %Ax, %By // accumulate in f32
+///     (via iterargs)
 ///     ..............
 ///     ..............
 ///    scf.yield // yield dpbf16 results
@@ -221,8 +277,8 @@ struct BF16DotProductOp : OpRewritePattern<vector::ContractionOp> {
                    vector::IteratorType::reduction);
 
     if (reductionCount == 0)
-      return rewriter.notifyMatchFailure(
-          contractOp, "Expected at least one reduction");
+      return rewriter.notifyMatchFailure(contractOp,
+                                         "Expected at least one reduction");
 
     if (reductionCount == 1)
       return rewriter.notifyMatchFailure(
@@ -268,6 +324,10 @@ struct BF16DotProductOp : OpRewritePattern<vector::ContractionOp> {
     if (isTransposedMatrix(contractOp))
       return rewriter.notifyMatchFailure(contractOp,
                                          "Matrices shoudn't be transposed.");
+
+    if (!permutationCheck(contractOp))
+      return rewriter.notifyMatchFailure(
+          contractOp, "Affine map permutation not supported.");
 
     auto loops = getNestedLoop(contractOp);
     if (failed(loops))
