@@ -60,6 +60,9 @@ static FailureOr<SmallVector<scf::ForOp>>
 getNestedLoop(vector::ContractionOp contractOp) {
   SmallVector<scf::ForOp> list;
   Operation *current = contractOp;
+  // It is register tiled loop structure on batch reduce matmul
+  // (M->N->Batch-reduce->K).
+  // TODO: support for matmul and batch matmul
   for (int i = 0; i < 4; i++) {
     Operation *parent = current->getParentOfType<scf::ForOp>();
     if (!parent)
@@ -70,32 +73,110 @@ getNestedLoop(vector::ContractionOp contractOp) {
   return list;
 }
 
+static bool isTransposedMatrix(vector::ContractionOp contractOp) {
+  SmallVector<AffineMap, 3> contractMaps = contractOp.getIndexingMapsArray();
+  AffineMap mapA = contractMaps[0];
+  AffineMap mapB = contractMaps[1];
+
+  auto resultsMapA = mapA.getNumResults();
+  auto resultsMapB = mapB.getNumResults();
+  assert(resultsMapA == 4 && resultsMapB == 4 &&
+         "Result dim map for A and B should be 4");
+
+  auto inputsMapA = mapA.getNumInputs();
+  auto inputsMapB = mapB.getNumInputs();
+  assert(inputsMapA == 5 && inputsMapB == 5 &&
+         "Input dim map for A and B should be 5");
+
+  auto vnniDim = dyn_cast<AffineDimExpr>(mapA.getResult(3));
+  auto dimBR = dyn_cast<AffineDimExpr>(mapA.getResult(0));
+
+  SmallVector<AffineDimExpr> listMxNxK;
+  for (unsigned int i = 0; i < inputsMapA; i++) {
+    auto affineExpr =
+        dyn_cast<AffineDimExpr>(mlir::getAffineDimExpr(i, mapA.getContext()));
+    if (affineExpr != vnniDim && affineExpr != dimBR)
+      listMxNxK.push_back(affineExpr);
+  }
+  auto dimM = listMxNxK[0];
+  auto dimN = listMxNxK[1];
+  auto dimK = listMxNxK[2];
+
+  // Transpose if the mapA is kxm
+  if (dyn_cast<AffineDimExpr>(mapA.getResult(1)) == dimK &&
+      dyn_cast<AffineDimExpr>(mapA.getResult(2)) == dimM)
+    return true;
+  // Transpose if the mapB is nxk
+  if (dyn_cast<AffineDimExpr>(mapB.getResult(1)) == dimN &&
+      dyn_cast<AffineDimExpr>(mapB.getResult(2)) == dimK)
+    return true;
+
+  return false;
+}
+
 static LogicalResult checkNestedLoop(SmallVector<scf::ForOp> loops,
                                      SmallVector<memref::SubViewOp> subviews) {
-  assert(loops.size() == 4 && subviews.size() == 3);
+  auto loopSize = loops.size();
+  assert(loopSize == 4 && subviews.size() == 3);
+
   auto subviewOpLhsOffsets = subviews[0].getOffsets();
   auto subviewOpRhsOffsets = subviews[1].getOffsets();
   auto subviewOpAccOffsets = subviews[2].getOffsets();
 
-  Value ivK = loops[0].getInductionVar();
-  if (ivK != subviewOpLhsOffsets[2] || ivK != subviewOpRhsOffsets[1])
+  SmallVector<Value> list;
+  for (size_t i = 0; i < loopSize; i++) {
+    list.push_back(loops[i].getInductionVar());
+  }
+
+  if (list[0] != subviewOpLhsOffsets[2] || list[0] != subviewOpRhsOffsets[1])
     return failure();
 
-  Value ivReduction = loops[1].getInductionVar();
-  if (ivReduction != subviewOpLhsOffsets[0] ||
-      ivReduction != subviewOpRhsOffsets[0])
+  if (list[1] != subviewOpLhsOffsets[0] || list[1] != subviewOpRhsOffsets[0])
     return failure();
 
-  Value ivN = loops[2].getInductionVar();
-  if (ivN != subviewOpAccOffsets[1] || ivN != subviewOpRhsOffsets[2])
+  if (list[2] != subviewOpAccOffsets[1] || list[2] != subviewOpRhsOffsets[2])
     return failure();
 
-  Value ivM = loops[3].getInductionVar();
-  if (ivM != subviewOpLhsOffsets[1] || ivM != subviewOpAccOffsets[0])
+  if (list[3] != subviewOpLhsOffsets[1] || list[3] != subviewOpAccOffsets[0])
     return failure();
 
   return success();
 }
+
+/// This pass lowers vector.contract (linalg.batch_reduce_matmul) for bf16
+/// (vnni=2) type into sequence of x86vector::DotBF16Op.
+///
+/// As an example, the following pseudo-code will be rewritten
+/// scf.for // m-tile
+///  scf.for // n-tile
+///   subview // C matrix
+///   scf.for // batch-reduce
+///   scf.for // k-tile
+///    subview // A and B matrix
+///    vector.read // A, B, and C matrix
+///    vector.contract
+///    vector.write // to C matrix
+///
+/// to:
+///
+/// scf.for // m-tile
+///  scf.for // n-tile
+///   vector.load // load C matrix in chunks of <16xbf16>
+///   arith.shli + vector.bitcast // upconvert to f32 and pass them as iterargs
+///   scf.for (iterargs = C matrix load as f32) // batch-reduce
+///    scf.for (iterargs = batch-reduce iterArgs) // k-tile
+///     vector.load // load 2 elements of A matrix and broadcast them into <32xbf16>
+///     vector.load // load elements of B matrix into <32xbf16>
+///     x86vector.avx512.dot %iterargs, %Ax, %Bx // accumulate in f32 (via iterargs)
+///     x86vector.avx512.dot %iterargs, %Ax, %By // accumulate in f32 (via iterargs)
+///     ..............
+///     ..............
+///    scf.yield // yield dpbf16 results
+///   scf.yield // yield results of scf.for k-tile
+///  arith.truncate // downconvert accumulator value from f32 to bf16
+///  vector.store // store back into C matrix
+///  .............
+///  ............
 
 struct BF16DotProductOp : OpRewritePattern<vector::ContractionOp> {
   using OpRewritePattern<vector::ContractionOp>::OpRewritePattern;
@@ -103,9 +184,12 @@ struct BF16DotProductOp : OpRewritePattern<vector::ContractionOp> {
   LogicalResult matchAndRewrite(vector::ContractionOp contractOp,
                                 PatternRewriter &rewriter) const override {
 
+    if (contractOp.getKind() != vector::CombiningKind::ADD)
+      return rewriter.notifyMatchFailure(
+          contractOp, "Only combining kind 'ADD' is supported now.");
+
     // Check the vector contract operation satisfies the required pattern.
     // Check the Acc, Lhs, and Rhs of contract operation
-
     auto operands = getContractProducers(contractOp);
     if (failed(operands))
       return rewriter.notifyMatchFailure(contractOp,
@@ -137,8 +221,8 @@ struct BF16DotProductOp : OpRewritePattern<vector::ContractionOp> {
                    vector::IteratorType::reduction);
 
     if (reductionCount == 0)
-      return rewriter.notifyMatchFailure(contractOp,
-                                         "Matmul operation not supported yet");
+      return rewriter.notifyMatchFailure(
+          contractOp, "Element-wise operation not supported yet");
 
     if (reductionCount == 1)
       return rewriter.notifyMatchFailure(
@@ -180,6 +264,10 @@ struct BF16DotProductOp : OpRewritePattern<vector::ContractionOp> {
     if (vnni != 2)
       return rewriter.notifyMatchFailure(
           contractOp, "Only VNNI layout=2 is supported, now");
+
+    if (isTransposedMatrix(contractOp))
+      return rewriter.notifyMatchFailure(contractOp,
+                                         "Matrices shoudn't be transposed.");
 
     auto loops = getNestedLoop(contractOp);
     if (failed(loops))

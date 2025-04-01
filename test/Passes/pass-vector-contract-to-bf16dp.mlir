@@ -107,6 +107,42 @@ module {
 
 // -----
 
+#map = affine_map<(d0, d1, d2, d3) -> (d0, d2, d1, d3)>
+#map1 = affine_map<(d0, d1, d2, d3, d4) -> (d0, d2, d4, d1)>
+#map2 = affine_map<(d0, d1, d2, d3, d4) -> (d0, d3, d4, d1)>
+#map3 = affine_map<(d0, d1, d2, d3, d4) -> (d2, d3)>
+module {
+  func.func @TransposeB_no_lowering(%arg0: memref<32x32x16x2xbf16>, %arg1: memref<32x16x32x2xbf16>, %arg2: memref<32x32xbf16>) {
+    %cst = arith.constant 0.000000e+00 : bf16
+    %c0 = arith.constant 0 : index
+    %c32 = arith.constant 32 : index
+    %c2 = arith.constant 2 : index
+    %c1 = arith.constant 1 : index
+    %c16 = arith.constant 16 : index
+    scf.for %arg3 = %c0 to %c32 step %c2 {
+      scf.for %arg4 = %c0 to %c32 step %c32 {
+        %subview = memref.subview %arg2[%arg3, %arg4] [2, 32] [1, 1] : memref<32x32xbf16> to memref<2x32xbf16, strided<[32, 1], offset: ?>>
+        scf.for %arg5 = %c0 to %c32 step %c1 {
+          scf.for %arg6 = %c0 to %c16 step %c1 {
+            %subview_0 = memref.subview %arg0[%arg5, %arg3, %arg6, 0] [1, 2, 1, 2] [1, 1, 1, 1] : memref<32x32x16x2xbf16> to memref<1x2x1x2xbf16, strided<[1024, 32, 2, 1], offset: ?>>
+            %subview_1 = memref.subview %arg1[%arg5, %arg6, %arg4, 0] [1, 1, 32, 2] [1, 1, 1, 1] : memref<32x16x32x2xbf16> to memref<1x1x32x2xbf16, strided<[1024, 64, 2, 1], offset: ?>>
+            %0 = vector.transfer_read %subview_0[%c0, %c0, %c0, %c0], %cst {in_bounds = [true, true, true, true]} : memref<1x2x1x2xbf16, strided<[1024, 32, 2, 1], offset: ?>>, vector<1x2x1x2xbf16>
+            %1 = vector.transfer_read %subview_1[%c0, %c0, %c0, %c0], %cst {in_bounds = [true, true, true, true], permutation_map = #map} : memref<1x1x32x2xbf16, strided<[1024, 64, 2, 1], offset: ?>>, vector<1x32x1x2xbf16>
+            %2 = vector.transfer_read %subview[%c0, %c0], %cst {in_bounds = [true, true]} : memref<2x32xbf16, strided<[32, 1], offset: ?>>, vector<2x32xbf16>
+            %3 = vector.contract {indexing_maps = [#map1, #map2, #map3], iterator_types = ["reduction", "reduction", "parallel", "parallel", "reduction"], kind = #vector.kind<add>} %0, %1, %2 : vector<1x2x1x2xbf16>, vector<1x32x1x2xbf16> into vector<2x32xbf16>
+            vector.transfer_write %3, %subview[%c0, %c0] {in_bounds = [true, true]} : vector<2x32xbf16>, memref<2x32xbf16, strided<[32, 1], offset: ?>>
+          }
+        }
+      }
+    }
+    return
+  }
+}
+
+// CONF1-LABEL: func.func @TransposeB_no_lowering
+// CONF1-NOT: x86vector.avx512.dot
+
+// -----
 
 module {
  func.func @gemm_64_tiles_testing_different_cases(%arg0: memref<32x64x32x2xbf16>, %arg1: memref<32x32x64x2xbf16>, %arg2: memref<64x64xbf16>) {
@@ -146,8 +182,6 @@ module {
   }
 }
 
-// CONF3-LABEL: func.func @gemm_no_bf16dp_lowering
-// CONF3-NOT: x86vector.avx512.dot
+// CONF2-LABEL: func.func @gemm_no_bf16dp_lowering
+// CONF2-NOT: x86vector.avx512.dot
 
-// CONF4-LABEL: func.func @gemm_no_bf16dp_lowering
-// CONF4-NOT: x86vector.avx512.dot
