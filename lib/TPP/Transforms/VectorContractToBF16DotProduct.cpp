@@ -222,7 +222,7 @@ struct BF16DotProductOp : OpRewritePattern<vector::ContractionOp> {
 
     if (reductionCount == 0)
       return rewriter.notifyMatchFailure(
-          contractOp, "Element-wise operation not supported yet");
+          contractOp, "Expected at least one reduction");
 
     if (reductionCount == 1)
       return rewriter.notifyMatchFailure(
