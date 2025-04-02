@@ -1,4 +1,4 @@
-//===-------------- VectorContractToBF16DotProduct.cpp ----------*- C++-*-===//
+//===- VectorContractToBF16DotProduct.cpp -----------------------*- C++-*-===//
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
@@ -220,11 +220,10 @@ static LogicalResult checkNestedLoop(SmallVector<scf::ForOp> loops,
 ///   arith.shli + vector.bitcast // upconvert to f32 and pass them as iterargs
 ///   scf.for (iterargs = C matrix load as f32) // batch-reduce
 ///    scf.for (iterargs = batch-reduce iterArgs) // k-tile
-///     vector.load // load 2 elements of A matrix and broadcast them into
-///     <32xbf16> vector.load // load elements of B matrix into <32xbf16>
-///     x86vector.avx512.dot %iterargs, %Ax, %Bx // accumulate in f32 (via
-///     iterargs) x86vector.avx512.dot %iterargs, %Ax, %By // accumulate in f32
-///     (via iterargs)
+///     vector.load // load 2 elements of A matrix and broadcast them into <32xbf16>
+///     vector.load // load elements of B matrix into <32xbf16>
+///     x86vector.avx512.dot %iterargs, %Ax, %Bx // accumulate in f32 (via iterargs)
+///     x86vector.avx512.dot %iterargs, %Ax, %By // accumulate in f32 (via iterargs)
 ///     ..............
 ///     ..............
 ///    scf.yield // yield dpbf16 results
@@ -275,10 +274,6 @@ struct BF16DotProductOp : OpRewritePattern<vector::ContractionOp> {
     int reductionCount =
         std::count(contractIteratorTypes.begin(), contractIteratorTypes.end(),
                    vector::IteratorType::reduction);
-
-    if (reductionCount == 0)
-      return rewriter.notifyMatchFailure(contractOp,
-                                         "Expected at least one reduction");
 
     if (reductionCount == 1)
       return rewriter.notifyMatchFailure(
