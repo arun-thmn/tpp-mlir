@@ -64,6 +64,13 @@
       "flags": [ "-n", "100" ],
       "extensions": [ "avx2" ]
     },
+    "gemm_bf16_dp2_mlir_vector_kernel_avx512bf16": {
+      "type": "IR-GEN",
+      "benchmark": [ "mlir-gen", "--kernel=const --float-type=bf16 --batch=256 --layers=1024,1024,1024,1024 --tiles=32,32,32 --vnni=2" ],
+      "environment": {},
+      "flags": [ "-n", "100", "-run-args='--vector-to-kernels --registerBlocking=8,32,2 '" ],
+      "extensions": [ "avx512.*" ]
+    },
     "gemm_bf16_dp4_mlir": {
       "type": "IR-GEN",
       "benchmark": [ "mlir-gen", "--kernel=const --float-type=bf16 --batch=256 --layers=1024,1024,1024,1024 --tiles=32,32,32 --vnni=4" ],
@@ -106,6 +113,13 @@
       "flags": [ "-n", "100" ],
       "extensions": [ "avx2" ]
     },
+    "mlp_bf16_dp2_mlir_vector_kernel_avx512bf16": {
+      "type": "IR-GEN",
+      "benchmark": [ "mlir-gen", "--kernel=const --bias --relu --float-type=bf16 --batch=256 --layers=1024,1024,1024,1024 --tiles=32,32,32 --vnni=2" ],
+      "environment": {},
+      "flags": [ "-n", "100", "-run-args='--def-parallel --vector-to-kernels --registerBlocking=8,32,2'" ],
+      "extensions": [ "avx512.*" ]
+    },
     "mlp_bf16_dp4_mlir": {
       "type": "IR-GEN",
       "benchmark": [ "mlir-gen", "--kernel=const --bias --relu --float-type=bf16 --batch=256 --layers=1024,1024,1024,1024 --tiles=32,32,32 --vnni=4" ],
@@ -141,7 +155,7 @@
       "type": "IR-GEN",
       "benchmark": [ "mlir-gen", "--kernel=args --float-type=f32 --batch=256 --layers=1024,1024,1024,1024" ],
       "environment": {},
-      "flags": [ "-n", "100", "-run-args='--vector-to-kernels --registerBlocking=8,32,1 '" ],
+      "flags": [ "-n", "100", "-run-args='--vector-to-kernels --registerBlocking=8,32,1'" ],
       "extensions": [ "avx512.*" ]
     },
     "bf16_3x1024_const_mlir": {
@@ -151,12 +165,26 @@
       "flags": [ "-n", "100"],
       "extensions": [ "(avx2|asimd)" ]
     },
+    "bf16_3x1024_const_mlir_vector_kernel_avx512bf16": {
+      "type": "IR-GEN",
+      "benchmark": [ "mlir-gen", "--kernel=const --float-type=bf16 --batch=256 --layers=1024,1024,1024,1024 --tiles=32,32,32" ],
+      "environment": {},
+      "flags": [ "-n", "100", "-run-args='--vector-to-kernels --registerBlocking=8,32,2'"],
+      "extensions": [ "avx512.*" ]
+    },
     "bf16_3x1024_args_mlir": {
       "type": "IR-GEN",
       "benchmark": [ "mlir-gen", "--kernel=args --float-type=bf16 --batch=256 --layers=1024,1024,1024,1024" ],
       "environment": {},
       "flags": [ "-n", "100"],
       "extensions": [ "(avx2|asimd)" ]
+    },
+    "bf16_3x1024_args_mlir_vector_kernel_avx512bf16": {
+      "type": "IR-GEN",
+      "benchmark": [ "mlir-gen", "--kernel=args --float-type=bf16 --batch=256 --layers=1024,1024,1024,1024 --tiles=32,32,32 --vnni=2" ],
+      "environment": {},
+      "flags": [ "-n", "100", "-run-args='--vector-to-kernels --registerBlocking=8,32,2'"],
+      "extensions": [ "avx512.*" ]
     }
   }},
   {
@@ -196,12 +224,26 @@
       "flags": [ "-n", "100"],
       "extensions": [ "(avx2|asimd)" ]
     },
+    "bf16_3x1024_const_mlir_vector_kernel_avx512bf16": {
+      "type": "IR-GEN",
+      "benchmark": [ "mlir-gen", "--kernel=const --bias --relu --float-type=bf16 --batch=256 --layers=1024,1024,1024,1024 --tiles=32,32,32" ],
+      "environment": {},
+      "flags": [ "-n", "100", "-run-args='--vector-to-kernels --registerBlocking=8,32,2'"],
+      "extensions": [ "avx512.*" ]
+    },
     "bf16_3x1024_args_mlir": {
       "type": "IR-GEN",
       "benchmark": [ "mlir-gen", "--kernel=args --bias --relu --float-type=bf16 --batch=256 --layers=1024,1024,1024,1024" ],
       "environment": {},
       "flags": [ "-n", "100"],
       "extensions": [ "(avx2|asimd)" ]
+    },
+    "bf16_3x1024_args_mlir_vector_kernel_avx512bf16": {
+      "type": "IR-GEN",
+      "benchmark": [ "mlir-gen", "--kernel=args --bias --relu --float-type=bf16 --batch=256 --layers=1024,1024,1024,1024 --tiles=32,32,32 --vnni=2" ],
+      "environment": {},
+      "flags": [ "-n", "100", "-run-args='--vector-to-kernels --registerBlocking=8,32,2'"],
+      "extensions": [ "avx512.*" ]
     }
   }}
 ]
