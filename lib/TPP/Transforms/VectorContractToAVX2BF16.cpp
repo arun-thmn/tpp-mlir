@@ -342,92 +342,124 @@ struct AVX2BF16Op : OpRewritePattern<vector::ContractionOp> {
                     *vectorReadOpRhs.getSource().getDefiningOp(), rhsMapping);
 
                 for (int j = 0, k = 0; j < N; j = j + 8) {
-                  llvm::SmallVector<OpFoldResult> sizes_A = {
-                      rewriter.getIndexAttr(1), rewriter.getIndexAttr(1),
-                      rewriter.getIndexAttr(1), rewriter.getIndexAttr(1)};
-                  llvm::SmallVector<OpFoldResult> strides = {
-                      rewriter.getIndexAttr(1), rewriter.getIndexAttr(1),
-                      rewriter.getIndexAttr(1), rewriter.getIndexAttr(1)};
-                  SmallVector<OpFoldResult> offsets_A = {
-                      rewriter.getIndexAttr(0),
-                      rewriter.getIndexAttr(0),
-                      rewriter.getIndexAttr(0),
-                      rewriter.getIndexAttr(1),
-                  };
-                  auto subview_A = rewriter.create<memref::SubViewOp>(
-                      kForOp.getLoc(), lhsClone->getResult(0), offsets_A,
-                      sizes_A, strides);
-                  mlir::VectorType dstType =
-                      mlir::VectorType::get(8, rewriter.getF32Type());
-                  auto A_Odd =
-                      rewriter.create<mlir::x86vector::BcstBF16ToPackedF32Op>(
-                          kForOp.getLoc(), dstType, subview_A);
 
-                  SmallVector<OpFoldResult> offsets_B = {
-                      rewriter.getIndexAttr(0),
-                      rewriter.getIndexAttr(0),
-                      rewriter.getIndexAttr(j),
-                      rewriter.getIndexAttr(0),
-                  };
-                  llvm::SmallVector<OpFoldResult> sizes_B = {
-                      rewriter.getIndexAttr(1), rewriter.getIndexAttr(1),
-                      rewriter.getIndexAttr(8), rewriter.getIndexAttr(2)};
-                  auto subview_B = rewriter.create<memref::SubViewOp>(
-                      kForOp.getLoc(), rhsClone->getResult(0), offsets_B,
-                      sizes_B, strides);
-                  auto B_Odd = rewriter.create<
-                      mlir::x86vector::CvtPackedOddIndexedBF16ToF32Op>(
-                      kForOp.getLoc(), dstType,
-                      subview_B); 
-                  auto fmaOdd = rewriter.create<vector::FMAOp>(
-                      kForOp.getLoc(), A_Odd, B_Odd, iterArgsNewKForOp[k]);
-                  k++;
+		  // Changes for A
+		  //
+  		auto attr = rewriter.getI32IntegerAttr(-65536);
+  		auto maskConst = rewriter.create<mlir::arith::ConstantOp>(kForOp.getLoc(), rewriter.getI32Type(), attr);
+		auto maskBcst = rewriterNewKForOp.create<vector::BroadcastOp>(
+                          kForOp.getLoc(),
+                          VectorType::get(8, rewriterNewKForOp.getI32Type()),
+                          maskConst);
+	        
+		Value indexOp_c0 =
+            		rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), 0);
+        	auto valueARow = rewriter.create<vector::LoadOp>(
+            		kForOp.getLoc(), VectorType::get(2, elementType),
+            		lhsClone->getResult(0), ValueRange{indexOp_c0, indexOp_c0, indexOp_c0, indexOp_c0});
+		auto bitcast_i32 = rewriter.create<vector::BitCastOp>(
+                 	kForOp.getLoc(),
+            		VectorType::get(1, rewriter.getIntegerType(32)), valueARow);
+		auto broadcastValueA =
+                      rewriterNewKForOp.create<vector::BroadcastOp>(
+                          kForOp.getLoc(),
+                          VectorType::get(8, rewriterNewKForOp.getI32Type()),
+                          bitcast_i32);
+		auto andOp = rewriter.create<arith::AndIOp>(kForOp.getLoc(), broadcastValueA, maskBcst);
+		auto AOdd = rewriter.create<vector::BitCastOp>(
+                        kForOp.getLoc(),
+                        VectorType::get(8, rewriter.getF32Type()), andOp);
 
-                  auto A_Even =
-                      rewriter.create<mlir::x86vector::BcstBF16ToPackedF32Op>(
-                          kForOp.getLoc(), dstType, lhsClone->getResult(0));
-                  auto B_Even = rewriter.create<
-                      mlir::x86vector::CvtPackedEvenIndexedBF16ToF32Op>(
-                      kForOp.getLoc(), dstType, subview_B);
-                  auto fmaEven = rewriter.create<vector::FMAOp>(
-                      kForOp.getLoc(), A_Even, B_Even, fmaOdd);
+		//changes for b
+		Value indexOp_cj =
+                        rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), j);
+		auto valueBRow = rewriter.create<vector::LoadOp>(
+                        kForOp.getLoc(), VectorType::get(16, elementType),
+                        rhsClone->getResult(0), ValueRange{indexOp_c0, indexOp_c0, indexOp_cj, indexOp_c0});
+		auto bitcast_i32_B = rewriter.create<vector::BitCastOp>(
+                        kForOp.getLoc(),
+                        VectorType::get(8, rewriter.getIntegerType(32)), valueBRow);
+		auto andOpB = rewriter.create<arith::AndIOp>(kForOp.getLoc(), bitcast_i32_B, maskBcst);
+		auto BOdd = rewriter.create<vector::BitCastOp>(
+                        kForOp.getLoc(),
+                        VectorType::get(8, rewriter.getF32Type()), andOpB);
+
+		//fma
+                auto fmaOdd = rewriter.create<vector::FMAOp>(
+                      kForOp.getLoc(), AOdd, BOdd, iterArgsNewKForOp[k]);
+		k++;
+
+		auto cst16 = rewriter.create<arith::ConstantOp>(
+            		kForOp.getLoc(),
+            		rewriter.getIntegerAttr(rewriter.getIntegerType(32), 16));
+		auto vectType = VectorType::get(8, rewriter.getIntegerType(32));
+        	auto shiftOpA = rewriter.create<arith::ShLIOp>(
+            		kForOp.getLoc(), vectType, broadcastValueA,
+           	 	rewriter.create<vector::BroadcastOp>(kForOp.getLoc(),
+                                                 vectType, cst16));
+		auto AEven = rewriter.create<vector::BitCastOp>(
+                        kForOp.getLoc(),
+                        VectorType::get(8, rewriter.getF32Type()), shiftOpA);
+
+		auto shiftOpB = rewriter.create<arith::ShLIOp>(
+                        kForOp.getLoc(), vectType, bitcast_i32_B,
+                        rewriter.create<vector::BroadcastOp>(kForOp.getLoc(),
+                                                 vectType, cst16));
+		auto BEven = rewriter.create<vector::BitCastOp>(
+                        kForOp.getLoc(),
+                        VectorType::get(8, rewriter.getF32Type()), shiftOpB);
+
+	   	//fma
+                auto fmaEven = rewriter.create<vector::FMAOp>(
+                      kForOp.getLoc(), AEven, BEven, fmaOdd);
+
+
 
                   bf16FMAs.push_back(fmaEven);
 
                   for (int i = 1; i < M; i++) {
-                    SmallVector<OpFoldResult> offsets_A1 = {
-                        rewriter.getIndexAttr(0),
-                        rewriter.getIndexAttr(i),
-                        rewriter.getIndexAttr(0),
-                        rewriter.getIndexAttr(1),
-                    };
-                    auto subview_A1 = rewriter.create<memref::SubViewOp>(
-                        kForOp.getLoc(), lhsClone->getResult(0), offsets_A1,
-                        sizes_A, strides);
 
-                    auto A1_Odd =
-                        rewriter.create<mlir::x86vector::BcstBF16ToPackedF32Op>(
-                            kForOp.getLoc(), dstType, subview_A1);
+
+
+                Value indexOp_c0 =
+                        rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), 0);
+		Value indexOp_ci =
+                        rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), i);
+                auto valueA1Row = rewriter.create<vector::LoadOp>(
+                        kForOp.getLoc(), VectorType::get(2, elementType),
+                        lhsClone->getResult(0), ValueRange{indexOp_c0, indexOp_ci, indexOp_c0, indexOp_c0});
+                auto bitcast_i32_A1 = rewriter.create<vector::BitCastOp>(
+                        kForOp.getLoc(),
+                        VectorType::get(1, rewriter.getIntegerType(32)), valueA1Row);
+                auto broadcastValueA1 =
+                      rewriterNewKForOp.create<vector::BroadcastOp>(
+                          kForOp.getLoc(),
+                          VectorType::get(8, rewriterNewKForOp.getI32Type()),
+                          bitcast_i32_A1);
+                auto andOpA1 = rewriter.create<arith::AndIOp>(kForOp.getLoc(), broadcastValueA1, maskBcst);
+                auto A1Odd = rewriter.create<vector::BitCastOp>(
+                        kForOp.getLoc(),
+                        VectorType::get(8, rewriter.getF32Type()), andOpA1);
+
 
                     auto fmaOdd_m = rewriter.create<vector::FMAOp>(
-                        kForOp.getLoc(), A1_Odd, B_Odd, iterArgsNewKForOp[k]);
+                        kForOp.getLoc(), A1Odd, BOdd, iterArgsNewKForOp[k]);
                     k++;
-                    SmallVector<OpFoldResult> offsets_A2 = {
-                        rewriter.getIndexAttr(0),
-                        rewriter.getIndexAttr(i),
-                        rewriter.getIndexAttr(0),
-                        rewriter.getIndexAttr(0),
-                    };
 
-                    auto subview_A2 = rewriter.create<memref::SubViewOp>(
-                        kForOp.getLoc(), lhsClone->getResult(0), offsets_A2,
-                        sizes_A, strides);
-                    auto A1_Even =
-                        rewriter.create<mlir::x86vector::BcstBF16ToPackedF32Op>(
-                            kForOp.getLoc(), dstType, subview_A2);
+
+
+                auto shiftOpA1 = rewriter.create<arith::ShLIOp>(
+                        kForOp.getLoc(), vectType, broadcastValueA1,
+                        rewriter.create<vector::BroadcastOp>(kForOp.getLoc(),
+                                                 vectType, cst16));
+                auto A1Even = rewriter.create<vector::BitCastOp>(
+                        kForOp.getLoc(),
+                        VectorType::get(8, rewriter.getF32Type()), shiftOpA1);
+
+
 
                     auto fmaEven_m = rewriter.create<vector::FMAOp>(
-                        kForOp.getLoc(), A1_Even, B_Even, fmaOdd_m);
+                        kForOp.getLoc(), A1Even, BEven, fmaOdd_m);
 
                     bf16FMAs.push_back(fmaEven_m);
                   }
