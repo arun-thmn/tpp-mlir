@@ -49,8 +49,10 @@ struct VectorToKernel : public tpp::impl::VectorToKernelBase<VectorToKernel>,
 
 private:
   void constructPipeline() override {
-    pm.addNestedPass<func::FuncOp>(createBF16DotProduct());
+    //pm.addNestedPass<func::FuncOp>(createBF16DotProduct());
+    //pm.addNestedPass<func::FuncOp>(createAVX2BF16());
     pm.addNestedPass<func::FuncOp>(createHoistVectorTransfers());
+    pm.addNestedPass<func::FuncOp>(createAVX2BF16());
     pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
     pm.addNestedPass<func::FuncOp>(createVectorContractToFMA());
   }

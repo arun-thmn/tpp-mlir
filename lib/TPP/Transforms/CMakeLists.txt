@@ -31,6 +31,7 @@ add_mlir_library(TPPTransforms
   HoistVectorTransfers.cpp
   VectorContractToFMA.cpp
   VectorContractToBF16DotProduct.cpp
+  VectorContractToAVX2BF16.cpp
 
   ADDITIONAL_HEADER_DIRS
     ${PROJECT_SOURCE_DIR}/include/TPP
