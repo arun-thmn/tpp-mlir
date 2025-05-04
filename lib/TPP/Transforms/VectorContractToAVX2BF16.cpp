@@ -1,4 +1,4 @@
-//===- VectorContractToAVX2BF16.cpp ------------------------*- C++-*-===//
+//===- VectorContractToAVX2BF16.cpp -----------------------*- C++-*-===//
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
@@ -216,8 +216,8 @@ struct AVX2BF16Op : OpRewritePattern<vector::ContractionOp> {
     auto elementType =
         (cast<MemRefType>(subviewOpAcc.getType())).getElementType();
 
-    if (!elementType.isBF16())
-      return rewriter.notifyMatchFailure(contractOp, "The type is not BF16");
+    if (!(elementType.isBF16() || elementType.isF16()))
+      return rewriter.notifyMatchFailure(contractOp, "The type is not BF16 or F16");
 
     // Check the operation type MatMul, B-MatMul, or BR-MatMul (FP32/BF16)
     SmallVector<vector::IteratorType> contractIteratorTypes =
@@ -360,7 +360,7 @@ struct AVX2BF16Op : OpRewritePattern<vector::ContractionOp> {
                   mlir::VectorType dstType =
                       mlir::VectorType::get(8, rewriter.getF32Type());
                   auto A_Odd =
-                      rewriter.create<mlir::x86vector::BcstBF16ToPackedF32Op>(
+                      rewriter.create<mlir::x86vector::BcstToPackedF32Op>(
                           kForOp.getLoc(), dstType, subview_A);
 
                   SmallVector<OpFoldResult> offsets_B = {
@@ -376,7 +376,7 @@ struct AVX2BF16Op : OpRewritePattern<vector::ContractionOp> {
                       kForOp.getLoc(), rhsClone->getResult(0), offsets_B,
                       sizes_B, strides);
                   auto B_Odd = rewriter.create<
-                      mlir::x86vector::CvtPackedOddIndexedBF16ToF32Op>(
+                      mlir::x86vector::CvtPackedOddIndexedToF32Op>(
                       kForOp.getLoc(), dstType,
                       subview_B); 
                   auto fmaOdd = rewriter.create<vector::FMAOp>(
@@ -384,10 +384,10 @@ struct AVX2BF16Op : OpRewritePattern<vector::ContractionOp> {
                   k++;
 
                   auto A_Even =
-                      rewriter.create<mlir::x86vector::BcstBF16ToPackedF32Op>(
+                      rewriter.create<mlir::x86vector::BcstToPackedF32Op>(
                           kForOp.getLoc(), dstType, lhsClone->getResult(0));
                   auto B_Even = rewriter.create<
-                      mlir::x86vector::CvtPackedEvenIndexedBF16ToF32Op>(
+                      mlir::x86vector::CvtPackedEvenIndexedToF32Op>(
                       kForOp.getLoc(), dstType, subview_B);
                   auto fmaEven = rewriter.create<vector::FMAOp>(
                       kForOp.getLoc(), A_Even, B_Even, fmaOdd);
@@ -406,7 +406,7 @@ struct AVX2BF16Op : OpRewritePattern<vector::ContractionOp> {
                         sizes_A, strides);
 
                     auto A1_Odd =
-                        rewriter.create<mlir::x86vector::BcstBF16ToPackedF32Op>(
+                        rewriter.create<mlir::x86vector::BcstToPackedF32Op>(
                             kForOp.getLoc(), dstType, subview_A1);
 
                     auto fmaOdd_m = rewriter.create<vector::FMAOp>(
@@ -423,7 +423,7 @@ struct AVX2BF16Op : OpRewritePattern<vector::ContractionOp> {
                         kForOp.getLoc(), lhsClone->getResult(0), offsets_A2,
                         sizes_A, strides);
                     auto A1_Even =
-                        rewriter.create<mlir::x86vector::BcstBF16ToPackedF32Op>(
+                        rewriter.create<mlir::x86vector::BcstToPackedF32Op>(
                             kForOp.getLoc(), dstType, subview_A2);
 
                     auto fmaEven_m = rewriter.create<vector::FMAOp>(
@@ -445,9 +445,16 @@ struct AVX2BF16Op : OpRewritePattern<vector::ContractionOp> {
             rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), i);
         Value indexOp_B =
             rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), j);
+	Type type = rewriter.getF16Type();
+	if (elementType.isBF16())
+		type = rewriter.getBF16Type();
+	if (elementType.isF16())
+                type = rewriter.getF16Type();
+	if (!type)
+		return failure();
         auto bf16vec = rewriter.create<arith::TruncFOp>(
             reductionForOp.getLoc(),
-            VectorType::get({8}, rewriter.getBF16Type()),
+            VectorType::get({8}, type),
             newReductionForOp.getResult(k));
         rewriter.create<vector::StoreOp>(reductionForOp.getLoc(), bf16vec,
                                          subviewOpAcc,
