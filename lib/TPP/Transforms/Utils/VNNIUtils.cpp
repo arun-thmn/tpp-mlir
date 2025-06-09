@@ -41,20 +41,21 @@ bool hasAVX512() {
          (libxsmm_get_target_archid() < LIBXSMM_X86_ALLFEAT);
 }
 
+// Returns the current target architecture name
 std::string getTargetArchName() {
-        if (libxsmm_get_target_archid() == LIBXSMM_X86_AVX2_ADL)
-                return "ADL";
+  if (libxsmm_get_target_archid() == LIBXSMM_X86_AVX2_ADL)
+    return "ADL";
 
-        if (libxsmm_get_target_archid() == LIBXSMM_X86_AVX2_SRF)
-                return "SRF";
+  if (libxsmm_get_target_archid() == LIBXSMM_X86_AVX2_SRF)
+    return "SRF";
 
-        if (libxsmm_get_target_archid() == LIBXSMM_X86_AVX512_CLX)
-                return "CLX";
+  if (libxsmm_get_target_archid() == LIBXSMM_X86_AVX512_CLX)
+    return "CLX";
 
-        if (libxsmm_get_target_archid() == LIBXSMM_X86_AVX512_CPX)
-                return "CPX";
+  if (libxsmm_get_target_archid() == LIBXSMM_X86_AVX512_CPX)
+    return "CPX";
 
-        return NULL;
+  return NULL;
 }
 
 unsigned getVnniBlockingFactor(Type type, Operation *op) {

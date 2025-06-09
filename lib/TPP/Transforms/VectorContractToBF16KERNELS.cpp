@@ -152,6 +152,39 @@ struct BF16KERNELSOp : OpRewritePattern<vector::ContractionOp> {
   LogicalResult matchAndRewrite(vector::ContractionOp contractOp,
                                 PatternRewriter &rewriter) const override {
 
+    // We get target architecture and decide on uKernel lowering using flags
+    auto cpuName = vnni::utils::getTargetArchName();
+    bool adl = false;
+    bool srf = false;
+    bool clx = false;
+    bool cpx = false;
+
+    int sizeFactor = 0;
+    if (cpuName == "SRF") {
+      sizeFactor = 8;
+      srf = true;
+    }
+
+    if (cpuName == "ADL") {
+      sizeFactor = 8;
+      adl = true;
+    }
+
+    if (cpuName == "CLX") {
+      sizeFactor = 16;
+      clx = true;
+    }
+
+    if (cpuName == "CPX") {
+      sizeFactor = 16;
+      cpx = true;
+    }
+
+    if (!(srf || adl || clx || cpx))
+      return rewriter.notifyMatchFailure(
+          contractOp, "This pass supports uKernel lowering only for "
+                      "SRF/ADL/ARL/CLX/CPX kind of machines");
+
     if (contractOp.getKind() != vector::CombiningKind::ADD)
       return rewriter.notifyMatchFailure(
           contractOp, "Only combining kind 'ADD' is supported now.");
@@ -183,9 +216,15 @@ struct BF16KERNELSOp : OpRewritePattern<vector::ContractionOp> {
     auto elementType =
         (cast<MemRefType>(subviewOpAcc.getType())).getElementType();
 
+    if (srf) {
     if (!(elementType.isBF16() || elementType.isF16()))
       return rewriter.notifyMatchFailure(contractOp,
                                          "The type is not BF16 or F16");
+    } else {
+    if (!(elementType.isBF16()))
+      return rewriter.notifyMatchFailure(contractOp,
+                                         "The type is not BF16");
+    }
 
     // Check the operation type MatMul, B-MatMul, or BR-MatMul (FP32/BF16)
     SmallVector<vector::IteratorType> contractIteratorTypes =
@@ -225,9 +264,9 @@ struct BF16KERNELSOp : OpRewritePattern<vector::ContractionOp> {
       return rewriter.notifyMatchFailure(
           contractOp, "K tile size should be equal to VNNI layout");
 
-    /*if ((N % 8) != 0)
+    if ((N % 16) != 0)
       return rewriter.notifyMatchFailure(
-          contractOp, "N tile size divisible by 8 are only supported");*/
+          contractOp, "N tile size divisible by 16 are only supported");
 
     if (vnni != 2)
       return rewriter.notifyMatchFailure(
@@ -240,39 +279,6 @@ struct BF16KERNELSOp : OpRewritePattern<vector::ContractionOp> {
     if (!permutationCheck(contractOp))
       return rewriter.notifyMatchFailure(
           contractOp, "Affine map permutation not supported.");
-
-    auto cpuName = vnni::utils::getTargetArchName();
-    bool adl = false;
-    bool srf = false;
-    bool clx = false;
-    bool cpx = false;
-
-    int sizeFactor = 8;
-
-    if (cpuName == "SRF") {
-      sizeFactor = 8;
-      srf = true;
-    }
-
-    if (cpuName == "ADL") {
-      sizeFactor = 8;
-      adl = true;
-    }
-
-    if (cpuName == "CLX") {
-      sizeFactor = 16;
-      clx = true;
-    }
-
-    if (cpuName == "CPX") {
-      sizeFactor = 16;
-      cpx = true;
-    }
-
-    if (!(srf || adl || clx || cpx))
-      return rewriter.notifyMatchFailure(
-          contractOp, "This pass supports uKernel lowering only for "
-                      "SRF/ADL/ARL/CLX/CPX kind of machines");
 
     rewriter.setInsertionPoint(mForOp);
     auto i32Type = rewriter.getIntegerType(32);
@@ -296,8 +302,6 @@ struct BF16KERNELSOp : OpRewritePattern<vector::ContractionOp> {
                                      ValueRange{indexOp_c0});
 
     rewriter.setInsertionPoint(reductionForOp);
-
-    llvm::SmallVector<Value, 8> subviewCMatrix;
     llvm::SmallVector<Value, 8> loopItrArgs;
 
     // C Matrix load + upconvert to f32
@@ -474,7 +478,9 @@ struct BF16KERNELSOp : OpRewritePattern<vector::ContractionOp> {
                   }
                 }
 
+		// uKernel lowering for machines that has no support for avx512bf16dp and AMX
                 if (clx) {
+		  // Load odd elements of B Matrix and store in a DS
                   for (int j = 0; j < N; j = j + sizeFactor) {
                     Value indexOp_cj = rewriter.create<arith::ConstantIndexOp>(
                         reductionForOp.getLoc(), j);
@@ -495,8 +501,9 @@ struct BF16KERNELSOp : OpRewritePattern<vector::ContractionOp> {
                     matf32.push_back(oddB);
                   }
 
+		  // Load odd elements of A Matrix, perform fma (odd), and store
+                  // to a DS
                   for (int i = 0; i < M; i++) {
-
                     Value indexOp_ci = rewriter.create<arith::ConstantIndexOp>(
                         reductionForOp.getLoc(), i);
                     auto denseAttr = DenseElementsAttr::get(
@@ -516,9 +523,9 @@ struct BF16KERNELSOp : OpRewritePattern<vector::ContractionOp> {
                     auto oddA = rewriterNewKForOp.create<vector::BroadcastOp>(
                         kForOp.getLoc(),
                         VectorType::get(sizeFactor,
-                                        rewriterNewKForOp.getF32Type()),
-                        bitcast_f32);
+                        rewriterNewKForOp.getF32Type()), bitcast_f32);
 
+		    // Odd FMAs
                     for (int j = 0; j < (N / sizeFactor); j++) {
                       auto fmaOdd = rewriter.create<vector::FMAOp>(
                           kForOp.getLoc(), oddA, matf32[j],
@@ -527,8 +534,10 @@ struct BF16KERNELSOp : OpRewritePattern<vector::ContractionOp> {
                     }
                   }
 
+		  // Clear B matrix odd loads to save even loads
                   matf32.clear();
 
+		  // Load even elements of B Matrix and store in a DS
                   for (int j = 0; j < N; j = j + sizeFactor) {
                     Value indexOp_cj = rewriter.create<arith::ConstantIndexOp>(
                         reductionForOp.getLoc(), j);
@@ -554,7 +563,8 @@ struct BF16KERNELSOp : OpRewritePattern<vector::ContractionOp> {
                   }
 
                   SmallVector<Value, 8> evenFMAs_swap;
-
+		  // Load even elements of A Matrix, perform fma (even), and store
+                  // to a DS
                   for (int i = 0, k = 0; i < M; i++) {
                     Value indexOp_ci = rewriter.create<arith::ConstantIndexOp>(
                         reductionForOp.getLoc(), i);
@@ -569,7 +579,6 @@ struct BF16KERNELSOp : OpRewritePattern<vector::ContractionOp> {
                         rewriterNewKForOp.create<vector::BroadcastOp>(
                             kForOp.getLoc(),
                             VectorType::get(sizeFactor, i32Type), bitcast_i32);
-
                     auto shiftOp = rewriter.create<arith::ShLIOp>(
                         kForOp.getLoc(), VectorType::get(sizeFactor, i32Type),
                         bcstValue,
@@ -581,6 +590,7 @@ struct BF16KERNELSOp : OpRewritePattern<vector::ContractionOp> {
                         VectorType::get(sizeFactor, rewriter.getF32Type()),
                         shiftOp);
 
+		    // Even FMAs
                     for (int j = 0; j < (N / sizeFactor); j++) {
                       auto fmaEven = rewriter.create<vector::FMAOp>(
                           kForOp.getLoc(), evenA, matf32[j], oddFMAs[k]);
@@ -589,15 +599,16 @@ struct BF16KERNELSOp : OpRewritePattern<vector::ContractionOp> {
                     }
                   }
 
+		  //  Re-arrange the stored FMAs in order
                   for (int j = 0; j < (N / sizeFactor); j++) {
                     for (int i = 0; i < M; i++) {
                       evenFMAs.push_back(
                           evenFMAs_swap[j + (i * (N / sizeFactor))]);
                     }
                   }
+                } 
 
-                } // clx
-
+		// uKernel lowering for AVX2  machines
                 if (srf || adl) {
                   // Load odd elements of A Matrix and store in a DS
                   for (int i = 0; i < M; i++) {
