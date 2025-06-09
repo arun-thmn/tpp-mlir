@@ -143,7 +143,16 @@ def BF16DotProduct : Pass<"vector-contract-to-bf16dp"> {
      Perform avx512bf16 dot product lowering of vector contraction operation for bf16 type with vnni layout=2.
    }];
    let dependentDialects = [ "vector::VectorDialect", "scf::SCFDialect", "x86vector::X86VectorDialect" ];
- }
+}
+
+
+def BF16KERNELS : Pass<"vector-contract-to-bf16-ukernels"> {
+   let summary = "Perform bf16 uKernel lowering of vector contraction operation with vnni layout=2";
+   let description = [{Add commentMore actions
+     Perform bf16 uKernel lowering of vector contraction operation with vnni layout=2.
+   }];
+   let dependentDialects = [ "vector::VectorDialect", "scf::SCFDialect", "x86vector::X86VectorDialect" ];
+}
 
 def ConvertXsmmToFunc : Pass<"convert-xsmm-to-func", "ModuleOp"> {
   let summary = "Convert xsmm to func";
