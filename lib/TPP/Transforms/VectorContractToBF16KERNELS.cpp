@@ -450,8 +450,7 @@ struct BF16KERNELSOp : OpRewritePattern<vector::ContractionOp> {
                         rewriterNewKForOp.create<vector::BitCastOp>(
                             kForOp.getLoc(),
                             VectorType::get({1},
-                                            rewriterNewKForOp.getI32Type()),
-                            valueRow);
+                            rewriterNewKForOp.getI32Type()), valueRow);
                     auto bcst_i32 =
                         rewriterNewKForOp.create<vector::BroadcastOp>(
                             kForOp.getLoc(),
@@ -521,8 +520,7 @@ struct BF16KERNELSOp : OpRewritePattern<vector::ContractionOp> {
                         kForOp.getLoc(),
                         VectorType::get(1, rewriter.getF32Type()), maskedLoad);
                     auto oddA = rewriterNewKForOp.create<vector::BroadcastOp>(
-                        kForOp.getLoc(),
-                        VectorType::get(sizeFactor,
+                        kForOp.getLoc(), VectorType::get(sizeFactor,
                         rewriterNewKForOp.getF32Type()), bitcast_f32);
 
 		    // Odd FMAs
