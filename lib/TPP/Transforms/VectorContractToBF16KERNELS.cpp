@@ -5,7 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements lowering of vector contraction using x86vector ops
+// This file implements lowering of vector contraction using x86vector ops 
+// to micro kernels.
+// Target types: bf16 and f16
+// Target archs: avx512 - clx and clp; avx2 - ARL/SRF and ADL
 //
 //===----------------------------------------------------------------------===//
 #include "TPP/Transforms/Utils/VNNIUtils.h"
@@ -422,7 +425,7 @@ struct BF16KERNELSOp : OpRewritePattern<vector::ContractionOp> {
                     rewriter.getIndexAttr(1), rewriter.getIndexAttr(1),
                     rewriter.getIndexAttr(1), rewriter.getIndexAttr(1)};
 
-                // uKernel lowering for machines like zen5 to target
+                // uKernel lowering for machines like cpx (zen5) to target
                 // avx512bf16dp
                 if (cpx) {
                   // Load elements of B matrix and store in a DS
