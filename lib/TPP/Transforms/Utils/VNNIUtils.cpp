@@ -55,7 +55,7 @@ std::string getTargetArchName() {
   if (libxsmm_get_target_archid() == LIBXSMM_X86_AVX512_CPX)
     return "CPX";
 
-  return NULL;
+  return "GEN";
 }
 
 unsigned getVnniBlockingFactor(Type type, Operation *op) {
