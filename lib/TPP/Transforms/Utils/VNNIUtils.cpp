@@ -43,17 +43,12 @@ bool hasAVX512() {
 
 // Returns the current target architecture name
 std::string getTargetArchName() {
-  if (libxsmm_get_target_archid() == LIBXSMM_X86_AVX2_ADL)
-    return "ADL";
-
   if (libxsmm_get_target_archid() == LIBXSMM_X86_AVX2_SRF)
     return "SRF";
 
-  if (libxsmm_get_target_archid() == LIBXSMM_X86_AVX512_CLX)
-    return "CLX";
-
-  if (libxsmm_get_target_archid() == LIBXSMM_X86_AVX512_CPX)
-    return "CPX";
+  if ((libxsmm_get_target_archid() == LIBXSMM_X86_AVX512_CPX) ||
+		  (libxsmm_get_target_archid() == LIBXSMM_X86_AVX512_SPR))
+    return "CPX_SPR";
 
   return "GEN";
 }
