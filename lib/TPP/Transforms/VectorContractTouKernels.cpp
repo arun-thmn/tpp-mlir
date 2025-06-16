@@ -161,6 +161,8 @@ static bool permutationCheck(vector::ContractionOp contractOp,
   }
 
   if (isF32) {
+    // We match the pattern {Batch-reduction, M, N, K}
+    // -> {Batch-reduction, M, K}
     auto c1 = inputDims[0] == outputDimsA[0];
     auto c2 =
         (inputDims[1] == outputDimsA[1]) && (inputDims[3] == outputDimsA[2]);
@@ -189,6 +191,8 @@ static bool permutationCheck(vector::ContractionOp contractOp,
   }
 
   if (isF32) {
+    // We match the pattern {Batch-reduction, M, N, K}
+    // -> {Batch-reduction, K, N}
     auto c4 = inputDims[0] == outputDimsB[0];
     auto c5 =
         (inputDims[2] == outputDimsB[2]) && (inputDims[3] == outputDimsB[1]);
@@ -198,6 +202,16 @@ static bool permutationCheck(vector::ContractionOp contractOp,
   return flag;
 }
 
+// We perform lowering based on the target architecture and type.
+// (1) f32 - lowering is decided based on avx512 (1st preference) or
+// avx2 support by the machine
+// (2) bf16 - We support three different lowerings (a) avx512bf16dp - machine
+// that has `avx512_bf16` support, (b) machine that has vcvtneebf162ps,
+// vcvtneobf162ps, and vbcstnebf162ps instructions, and (c) fallback
+// case - where we up-convert bf16 to f32, do FMAs, down-convert the
+// accumulation back to bf16.
+// (3) f16 - we support lowering only for machine that has vcvtneeph2ps,
+// vcvtneoph2ps, and vbcstnesh2ps.
 struct uKernelsOp : OpRewritePattern<vector::ContractionOp> {
   using OpRewritePattern<vector::ContractionOp>::OpRewritePattern;
 
@@ -208,9 +222,8 @@ struct uKernelsOp : OpRewritePattern<vector::ContractionOp> {
       return rewriter.notifyMatchFailure(
           contractOp, "Only combining kind 'ADD' is supported now.");
 
-    // Check the vector contract operation satisfies the required pattern.
-    // Check the Acc, Lhs, and Rhs of contract operation
-
+    // Check the vector contract operation satisfies the required loop
+    // pattern.
     auto loops = getNestedLoop(contractOp);
     if (failed(loops))
       return rewriter.notifyMatchFailure(
@@ -222,6 +235,7 @@ struct uKernelsOp : OpRewritePattern<vector::ContractionOp> {
     auto nForOp = nestedLoops[2];
     auto mForOp = nestedLoops[3];
 
+    // Get the Lhs, Rhs, and Acc of the contract operation.
     auto vectorReadOpAcc =
         reductionForOp.getInitArgs()[0].getDefiningOp<vector::TransferReadOp>();
     auto vectorReadOpLhs =
@@ -229,7 +243,7 @@ struct uKernelsOp : OpRewritePattern<vector::ContractionOp> {
     auto vectorReadOpRhs =
         contractOp.getRhs().getDefiningOp<vector::TransferReadOp>();
 
-    // Check whether the operand of vector transfer read is a subview
+    // Retrive the element type (f32 or bf16 or f16)
     auto subviewOpAcc =
         vectorReadOpAcc.getOperand(0).getDefiningOp<memref::SubViewOp>();
     auto elementType =
@@ -270,9 +284,9 @@ struct uKernelsOp : OpRewritePattern<vector::ContractionOp> {
 
     if (isF16 && !(srf))
       return rewriter.notifyMatchFailure(
-          contractOp, "F16 type is support only for SRF kind of machines");
+          contractOp, "F16 type is supported only for SRF kind of machines");
 
-    // Check the operation type MatMul, B-MatMul, or BR-MatMul (FP32/BF16)
+    // Check the operation type MatMul, B-MatMul, or BR-MatMul
     SmallVector<vector::IteratorType> contractIteratorTypes =
         contractOp.getIteratorTypesArray();
     int reductionCount =
@@ -326,7 +340,10 @@ struct uKernelsOp : OpRewritePattern<vector::ContractionOp> {
         return rewriter.notifyMatchFailure(
             contractOp, "K tile size should be equal to VNNI layout");
 
-      if ((N % 16) != 0)
+      // TODO: We need the N tile size to be divisible by 16 for avx2
+      // fallback case. So that it ensures, LLVM find a pattern and lowers to
+      // assembly without `vpinsrt`. This issue has to be fixed.
+      if (((N % 16) != 0) && fallback && !avx512)
         return rewriter.notifyMatchFailure(
             contractOp, "N tile size divisible by 16 are only supported");
 
@@ -346,9 +363,18 @@ struct uKernelsOp : OpRewritePattern<vector::ContractionOp> {
             contractOp, "K tile size should be equal to one");
     }
 
+    if (avx512 && (N < 16))
+      return rewriter.notifyMatchFailure(
+          contractOp, "N tile size should be >= 16 for avx512 targets");
+
+    if (!avx512 && avx2 && (N < 8))
+      return rewriter.notifyMatchFailure(
+          contractOp, "N tile size should be >= 8 for avx2 targets");
+
     if (isTransposedMatrix(contractOp, elementType))
       return rewriter.notifyMatchFailure(contractOp,
                                          "Matrices shoudn't be transposed.");
+
     if (!permutationCheck(contractOp, elementType))
       return rewriter.notifyMatchFailure(
           contractOp, "Affine map permutation not supported.");
@@ -361,7 +387,7 @@ struct uKernelsOp : OpRewritePattern<vector::ContractionOp> {
     auto cst16 = rewriter.create<arith::ConstantOp>(
         reductionForOp.getLoc(), rewriter.getIntegerAttr(i32Type, 16));
 
-    // Creating the mask for doing bitwise and operation (target: ADL)
+    // Creating the mask for doing bitwise and operation (target: fallback)
     auto intAttr = rewriter.getI32IntegerAttr(-65536);
     auto maskConst = rewriter.create<mlir::arith::ConstantOp>(
         reductionForOp.getLoc(), i32Type, intAttr);
@@ -377,7 +403,9 @@ struct uKernelsOp : OpRewritePattern<vector::ContractionOp> {
     rewriter.setInsertionPoint(reductionForOp);
     llvm::SmallVector<Value, 8> loopItrArgs;
 
-    // C Matrix load + upconvert to f32
+    // C matrix load:
+    // f32 - just load the matrix as f32 type
+    // bf16 and f16 - load the matrix up-convert to f32
     if (isBF16) {
       for (int j = 0; j < N; j = j + sizeFactor) {
         for (int i = 0; i < M; i++) {
@@ -509,8 +537,96 @@ struct uKernelsOp : OpRewritePattern<vector::ContractionOp> {
                     rewriter.getIndexAttr(1), rewriter.getIndexAttr(1),
                     rewriter.getIndexAttr(1), rewriter.getIndexAttr(1)};
 
-                // uKernel lowering for machines like cpx (zen5) to target
-                // avx512bf16dp
+                // uKernel lowering for f32 type. Target: avx512 instructions
+                if (isF32 && avx512) {
+                  // Load elements of B matrix and store in a DS
+                  for (int j = 0; j < N; j = j + sizeFactor) {
+                    Value indexOp_j = rewriter.create<arith::ConstantIndexOp>(
+                        reductionForOp.getLoc(), j);
+                    auto valueRow = rewriterNewKForOp.create<vector::LoadOp>(
+                        kForOp.getLoc(),
+                        VectorType::get(sizeFactor, elementType),
+                        rhsClone->getResult(0),
+                        ValueRange{indexOp_c0, indexOp_c0, indexOp_j});
+                    matf32.push_back(valueRow);
+                  }
+
+                  // Load elements of A matrix, do FMA, and store FMA in a DS
+                  for (int i = 0; i < M; i++) {
+                    Value indexOp_i = rewriter.create<arith::ConstantIndexOp>(
+                        reductionForOp.getLoc(), i);
+                    auto valueRow = rewriterNewKForOp.create<vector::LoadOp>(
+                        kForOp.getLoc(), VectorType::get({vnni}, elementType),
+                        lhsClone->getResult(0),
+                        ValueRange{indexOp_c0, indexOp_i, indexOp_c0});
+                    auto bcst_i32 =
+                        rewriterNewKForOp.create<vector::BroadcastOp>(
+                            kForOp.getLoc(),
+                            VectorType::get(sizeFactor,
+                                            rewriterNewKForOp.getF32Type()),
+                            valueRow);
+
+                    // Iterate through the stored elements of B and do FMA
+                    for (int j = 0; j < (N / sizeFactor); j++) {
+                      auto fmaOdd = rewriter.create<vector::FMAOp>(
+                          kForOp.getLoc(), bcst_i32, matf32[j],
+                          iterArgsNewKForOp[i + (j * M)]);
+                      oddFMAs.push_back(fmaOdd);
+                    }
+                  }
+
+                  // Re-arrange the stored FMAs in order of N -> M.
+                  // We load C matrix with N -> M. For example: c[0][0], c[1][0]
+                  // We do dp as M -> N order { [0][0], [0][16] ...}. So,
+                  // shuffling the M -> N to N -> M order
+                  for (int j = 0; j < (N / sizeFactor); j++) {
+                    for (int i = 0; i < M; i++) {
+                      evenFMAs.push_back(oddFMAs[j + (i * (N / sizeFactor))]);
+                    }
+                  }
+                } else if (isF32 && avx2) { // uKernel lowering for f32 type.
+                                            // Target: avx2 instructions
+                  // Load elements of A matrix and store in a DS
+                  for (int i = 0; i < M; i++) {
+                    Value indexOp_i = rewriter.create<arith::ConstantIndexOp>(
+                        reductionForOp.getLoc(), i);
+                    auto valueRow = rewriterNewKForOp.create<vector::LoadOp>(
+                        kForOp.getLoc(), VectorType::get({vnni}, elementType),
+                        lhsClone->getResult(0),
+                        ValueRange{indexOp_c0, indexOp_i, indexOp_c0});
+                    auto bcst_i32 =
+                        rewriterNewKForOp.create<vector::BroadcastOp>(
+                            kForOp.getLoc(),
+                            VectorType::get(sizeFactor,
+                                            rewriterNewKForOp.getF32Type()),
+                            valueRow);
+                    matf32.push_back(bcst_i32);
+                  }
+
+                  // Load elements of A matrix, do FMA, and store FMA in a DS
+                  for (int j = 0, k = 0; j < N; j = j + sizeFactor) {
+                    Value indexOp_j = rewriter.create<arith::ConstantIndexOp>(
+                        reductionForOp.getLoc(), j);
+                    auto valueRow = rewriterNewKForOp.create<vector::LoadOp>(
+                        kForOp.getLoc(),
+                        VectorType::get(sizeFactor, elementType),
+                        rhsClone->getResult(0),
+                        ValueRange{indexOp_c0, indexOp_c0, indexOp_j});
+                    matf32.push_back(valueRow);
+
+                    // Iterate through the stored elements of B and do FMA
+                    for (int i = 0; i < M; i++) {
+                      auto fmaOdd = rewriter.create<vector::FMAOp>(
+                          kForOp.getLoc(), matf32[i], valueRow,
+                          iterArgsNewKForOp[k]);
+                      k++;
+                      evenFMAs.push_back(fmaOdd);
+                    }
+                  }
+                }
+
+                // bf16 type + avx512. uKernel lowering for machines like
+                // cpx (zen5) to target avx512bf16dp.
                 if (bf16dp && isBF16) {
                   // Load elements of B matrix and store in a DS
                   for (int j = 0; j < N; j = j + sizeFactor) {
@@ -557,7 +673,10 @@ struct uKernelsOp : OpRewritePattern<vector::ContractionOp> {
                     }
                   }
 
-                  // Re-arrange the stored FMAs in order
+                  // Re-arrange the stored FMAs in order of N -> M.
+                  // We load C matrix with N -> M. For example: c[0][0], c[1][0]
+                  // We do dp as M -> N order { [0][0], [0][16] ...}. So,
+                  // shuffling the M -> N to N -> M order
                   for (int j = 0; j < (N / sizeFactor); j++) {
                     for (int i = 0; i < M; i++) {
                       evenFMAs.push_back(oddFMAs[j + (i * (N / sizeFactor))]);
@@ -565,85 +684,8 @@ struct uKernelsOp : OpRewritePattern<vector::ContractionOp> {
                   }
                 }
 
-                if (isF32 && avx512) {
-                  // Load elements of B matrix and store in a DS
-                  for (int j = 0; j < N; j = j + sizeFactor) {
-                    Value indexOp_j = rewriter.create<arith::ConstantIndexOp>(
-                        reductionForOp.getLoc(), j);
-                    auto valueRow = rewriterNewKForOp.create<vector::LoadOp>(
-                        kForOp.getLoc(),
-                        VectorType::get(sizeFactor, elementType),
-                        rhsClone->getResult(0),
-                        ValueRange{indexOp_c0, indexOp_c0, indexOp_j});
-                    matf32.push_back(valueRow);
-                  }
-
-                  // Load elements of A matrix, do FMA, and store in a DS
-                  for (int i = 0; i < M; i++) {
-                    Value indexOp_i = rewriter.create<arith::ConstantIndexOp>(
-                        reductionForOp.getLoc(), i);
-                    auto valueRow = rewriterNewKForOp.create<vector::LoadOp>(
-                        kForOp.getLoc(), VectorType::get({vnni}, elementType),
-                        lhsClone->getResult(0),
-                        ValueRange{indexOp_c0, indexOp_i, indexOp_c0});
-                    auto bcst_i32 =
-                        rewriterNewKForOp.create<vector::BroadcastOp>(
-                            kForOp.getLoc(),
-                            VectorType::get(sizeFactor,
-                                            rewriterNewKForOp.getF32Type()),
-                            valueRow);
-                    for (int j = 0; j < (N / sizeFactor); j++) {
-                      auto fmaOdd = rewriter.create<vector::FMAOp>(
-                          kForOp.getLoc(), bcst_i32, matf32[j],
-                          iterArgsNewKForOp[i + (j * M)]);
-                      oddFMAs.push_back(fmaOdd);
-                    }
-                  }
-
-                  // Re-arrange the stored FMAs in order
-                  for (int j = 0; j < (N / sizeFactor); j++) {
-                    for (int i = 0; i < M; i++) {
-                      evenFMAs.push_back(oddFMAs[j + (i * (N / sizeFactor))]);
-                    }
-                  }
-                } else if (isF32 && avx2) {
-                  for (int i = 0; i < M; i++) {
-                    Value indexOp_i = rewriter.create<arith::ConstantIndexOp>(
-                        reductionForOp.getLoc(), i);
-                    auto valueRow = rewriterNewKForOp.create<vector::LoadOp>(
-                        kForOp.getLoc(), VectorType::get({vnni}, elementType),
-                        lhsClone->getResult(0),
-                        ValueRange{indexOp_c0, indexOp_i, indexOp_c0});
-                    auto bcst_i32 =
-                        rewriterNewKForOp.create<vector::BroadcastOp>(
-                            kForOp.getLoc(),
-                            VectorType::get(sizeFactor,
-                                            rewriterNewKForOp.getF32Type()),
-                            valueRow);
-                    matf32.push_back(bcst_i32);
-                  }
-
-                  for (int j = 0, k = 0; j < N; j = j + sizeFactor) {
-                    Value indexOp_j = rewriter.create<arith::ConstantIndexOp>(
-                        reductionForOp.getLoc(), j);
-                    auto valueRow = rewriterNewKForOp.create<vector::LoadOp>(
-                        kForOp.getLoc(),
-                        VectorType::get(sizeFactor, elementType),
-                        rhsClone->getResult(0),
-                        ValueRange{indexOp_c0, indexOp_c0, indexOp_j});
-                    matf32.push_back(valueRow);
-                    for (int i = 0; i < M; i++) {
-                      auto fmaOdd = rewriter.create<vector::FMAOp>(
-                          kForOp.getLoc(), matf32[i], valueRow,
-                          iterArgsNewKForOp[k]);
-                      k++;
-                      evenFMAs.push_back(fmaOdd);
-                    }
-                  }
-                }
-
-                // uKernel lowering for machines that has no support for
-                // avx512bf16dp and AMX
+                // bf16 type + fallback + avx512. uKernel lowering for machines
+                // that has no support for avx512bf16dp and AMX
                 if (fallback && avx512) {
                   // Load odd elements of B Matrix and store in a DS
                   for (int j = 0; j < N; j = j + sizeFactor) {
@@ -775,6 +817,8 @@ struct uKernelsOp : OpRewritePattern<vector::ContractionOp> {
                 }
 
                 // uKernel lowering for AVX2  machines
+                // Target: (a) f16 and bf16 for srf kind of machines
+                // (b) bf16 fallback + avx2 instructions
                 if (srf || (fallback && avx2 && !avx512)) {
                   // Load odd elements of A Matrix and store in a DS
                   for (int i = 0; i < M; i++) {
@@ -936,7 +980,9 @@ struct uKernelsOp : OpRewritePattern<vector::ContractionOp> {
                   }
 
                   // Load even elements of B-Matrix, perform fma (even), and
-                  // store to a DS
+                  // store to a DS.
+                  // TODO: We increment `j` value by 16 so that LLVM finds
+                  // correct pattern for lowering to assembly. To be fixed.
                   if (fallback) {
                     for (int j = 0, k = 0; j < N; j = j + 16) {
 
@@ -1055,6 +1101,7 @@ struct uKernelsOp : OpRewritePattern<vector::ContractionOp> {
         kForOp.getLoc(), DenseIntElementsAttr::get(
                              VectorType::get(sizeFactor, i32Type), 0x7fff));
 
+    // We first retrive the source of the C matrix
     auto subview_itr = subviewOpAcc.getSource();
     Value subview_tmp = subviewOpAcc;
 
@@ -1078,7 +1125,8 @@ struct uKernelsOp : OpRewritePattern<vector::ContractionOp> {
       source = subview_tmp;
     }
 
-    // get the addOp and maxOp source
+    // Find the use of C matrix and
+    // get the addOp and maxOp source for mlp
     for (auto users : source.getUsers()) {
       if (auto vectorRead = dyn_cast<vector::TransferReadOp>(users)) {
         for (auto read_users : vectorRead->getUsers()) {
@@ -1093,7 +1141,8 @@ struct uKernelsOp : OpRewritePattern<vector::ContractionOp> {
       }
     }
 
-    // get the input source for addOp via vector transfer read
+    // get the 2nd input source for addOp via vector transfer read
+    // ps: the 1st one is C matrix
     if (addOp && maxOp && !isF32) {
       vector::TransferReadOp readOp_add;
       if (auto vectBcst = addOp.getLhs().getDefiningOp<vector::BroadcastOp>()) {
@@ -1203,7 +1252,7 @@ struct uKernelsOp : OpRewritePattern<vector::ContractionOp> {
         Value vec_final = acc_value;
 
         // We do f32 -> bf16 downconvert using rshift, truncate and rounding the
-        // lsb for ADL
+        // lsb for the fallback case.
         if (fallback && isBF16) {
           auto vec = rewriter.create<vector::BitCastOp>(
               kForOp.getLoc(), VectorType::get(sizeFactor, i32Type), acc_value);
@@ -1225,13 +1274,14 @@ struct uKernelsOp : OpRewritePattern<vector::ContractionOp> {
               VectorType::get(sizeFactor, rewriter.getBF16Type()), truncate);
         }
 
-        // We do arith.tuncf for f32 -> bf16 in SRF/ARL
+        // We do arith.tuncf for f32 -> bf16 in SRF/ARL/SPR kind of machines
         if (srf || bf16dp) {
           vec_final = rewriter.create<arith::TruncFOp>(
               reductionForOp.getLoc(), VectorType::get(sizeFactor, type),
               acc_value);
         }
 
+        // Final store back the accumulate value into c matrix
         rewriter.create<vector::StoreOp>(reductionForOp.getLoc(), vec_final,
                                          subviewOpAcc,
                                          ValueRange{indexOp, indexOp_B});
