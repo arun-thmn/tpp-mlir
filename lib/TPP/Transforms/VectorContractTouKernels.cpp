@@ -577,7 +577,7 @@ struct uKernelsOp : OpRewritePattern<vector::ContractionOp> {
 
                   // Re-arrange the stored FMAs in order of N -> M.
                   // We load C matrix with N -> M. For example: c[0][0], c[1][0]
-                  // We do dp as M -> N order { [0][0], [0][16] ...}. So,
+                  // We do FMA as M -> N order { [0][0], [0][16] ...}. So,
                   // shuffling the M -> N to N -> M order
                   for (int j = 0; j < (N / sizeFactor); j++) {
                     for (int i = 0; i < M; i++) {
@@ -603,7 +603,7 @@ struct uKernelsOp : OpRewritePattern<vector::ContractionOp> {
                     matf32.push_back(bcst_i32);
                   }
 
-                  // Load elements of A matrix, do FMA, and store FMA in a DS
+                  // Load elements of B matrix, do FMA, and store FMA in a DS
                   for (int j = 0, k = 0; j < N; j = j + sizeFactor) {
                     Value indexOp_j = rewriter.create<arith::ConstantIndexOp>(
                         reductionForOp.getLoc(), j);
