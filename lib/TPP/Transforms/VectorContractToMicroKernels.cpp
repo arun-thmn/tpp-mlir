@@ -1,4 +1,4 @@
-//===- VectorContractTouKernels.cpp -----------------------*- C++-*-===//
+//===- VectorContractToMicroKernels.cpp -----------------------*- C++-*-===//
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
@@ -27,7 +27,7 @@
 
 namespace mlir {
 namespace tpp {
-#define GEN_PASS_DEF_UKERNELS
+#define GEN_PASS_DEF_MICROKERNELS
 #include "TPP/Passes.h.inc"
 } // namespace tpp
 } // namespace mlir
@@ -202,6 +202,21 @@ static bool permutationCheck(vector::ContractionOp contractOp,
   return flag;
 }
 
+static memref::AllocOp createMask(Location loc, PatternRewriter &rewriter,
+                                  Value indexOp_c0, int64_t sizeFactor,
+                                  Type i32Type) {
+  auto intAttr = rewriter.getI32IntegerAttr(-65536);
+  auto maskConst =
+      rewriter.create<mlir::arith::ConstantOp>(loc, i32Type, intAttr);
+  auto mBcst = rewriter.create<vector::BroadcastOp>(
+      loc, VectorType::get(sizeFactor, i32Type), maskConst);
+  auto memrefMask = rewriter.create<mlir::memref::AllocOp>(
+      loc, MemRefType::get({1}, VectorType::get(sizeFactor, i32Type)));
+  rewriter.create<memref::StoreOp>(loc, mBcst, memrefMask,
+                                   ValueRange{indexOp_c0});
+  return memrefMask;
+}
+
 // We perform lowering based on the target architecture and type.
 // (1) f32 - lowering is decided based on avx512 (1st preference) or
 // avx2 support by the machine
@@ -212,7 +227,7 @@ static bool permutationCheck(vector::ContractionOp contractOp,
 // accumulation back to bf16.
 // (3) f16 - we support lowering only for machine that has vcvtneeph2ps,
 // vcvtneoph2ps, and vbcstnesh2ps.
-struct uKernelsOp : OpRewritePattern<vector::ContractionOp> {
+struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
   using OpRewritePattern<vector::ContractionOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(vector::ContractionOp contractOp,
@@ -387,18 +402,10 @@ struct uKernelsOp : OpRewritePattern<vector::ContractionOp> {
     auto cst16 = rewriter.create<arith::ConstantOp>(
         reductionForOp.getLoc(), rewriter.getIntegerAttr(i32Type, 16));
 
-    // Creating the mask for doing bitwise and operation (target: fallback)
-    auto intAttr = rewriter.getI32IntegerAttr(-65536);
-    auto maskConst = rewriter.create<mlir::arith::ConstantOp>(
-        reductionForOp.getLoc(), i32Type, intAttr);
-    auto mBcst = rewriter.create<vector::BroadcastOp>(
-        reductionForOp.getLoc(), VectorType::get(sizeFactor, i32Type),
-        maskConst);
-    auto memrefMask = rewriter.create<mlir::memref::AllocOp>(
-        reductionForOp.getLoc(),
-        MemRefType::get({1}, VectorType::get(sizeFactor, i32Type)));
-    rewriter.create<memref::StoreOp>(reductionForOp.getLoc(), mBcst, memrefMask,
-                                     ValueRange{indexOp_c0});
+    // Creating the mask for doing bitwise `and` operation + store them
+    // in memory(target: fallback)
+    auto memrefMask = createMask(reductionForOp.getLoc(), rewriter, indexOp_c0,
+                                 sizeFactor, i32Type);
 
     rewriter.setInsertionPoint(reductionForOp);
     llvm::SmallVector<Value, 8> loopItrArgs;
@@ -1323,16 +1330,16 @@ struct uKernelsOp : OpRewritePattern<vector::ContractionOp> {
   }
 };
 
-void populateuKernelsPatterns(RewritePatternSet &patterns) {
-  patterns.add<uKernelsOp>(patterns.getContext());
+void populateMicroKernelsPatterns(RewritePatternSet &patterns) {
+  patterns.add<MicroKernelsOp>(patterns.getContext());
 }
 
-struct uKernels : public impl::uKernelsBase<uKernels> {
-  using uKernelsBase::uKernelsBase;
+struct MicroKernels : public impl::MicroKernelsBase<MicroKernels> {
+  using MicroKernelsBase::MicroKernelsBase;
 
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
-    populateuKernelsPatterns(patterns);
+    populateMicroKernelsPatterns(patterns);
     GreedyRewriteConfig config;
     config.setStrictness(GreedyRewriteStrictness::ExistingOps);
     (void)applyPatternsGreedily(getOperation(), std::move(patterns), config);

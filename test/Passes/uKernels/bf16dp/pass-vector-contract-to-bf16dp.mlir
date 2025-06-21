@@ -1,4 +1,4 @@
-// RUN: tpp-opt %s --tile-brgemm-linalg="registerBlocking=6,64,2" --loop-invariant-code-motion --vectorization-pass --hoist-vector-transfer --vector-contract-to-ukernels  --split-input-file  | FileCheck -check-prefix=CHECK %s
+// RUN: tpp-opt %s --tile-brgemm-linalg="registerBlocking=6,64,2" --loop-invariant-code-motion --vectorization-pass --hoist-vector-transfer --vector-contract-to-micro-kernels  --split-input-file  | FileCheck -check-prefix=CHECK %s
 
 module {
  memref.global "private" constant @__constant_2x16x128x2xbf16 : memref<2x16x128x2xbf16> = dense<1.000000e+00> {alignment = 64 : i64}

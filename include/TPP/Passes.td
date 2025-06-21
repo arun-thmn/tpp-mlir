@@ -146,10 +146,10 @@ def BF16DotProduct : Pass<"vector-contract-to-bf16dp"> {
 }
 
 
-def uKernels : Pass<"vector-contract-to-ukernels"> {
-   let summary = "Perform uKernel lowering of vector contraction operation";
+def MicroKernels : Pass<"vector-contract-to-micro-kernels"> {
+   let summary = "Perform  lowering of vector contraction operation";
    let description = [{Add commentMore actions
-     Perform  uKernel lowering of vector contraction operation.
+     Perform  micro kernel lowering of vector contraction operation.
    }];
    let dependentDialects = [ "vector::VectorDialect", "scf::SCFDialect", "x86vector::X86VectorDialect" ];
 }

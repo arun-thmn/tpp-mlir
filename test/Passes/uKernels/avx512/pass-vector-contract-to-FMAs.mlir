@@ -1,6 +1,6 @@
-// RUN: tpp-opt %s --tile-brgemm-linalg="registerBlocking=6,64,1" --loop-invariant-code-motion --vectorization-pass --hoist-vector-transfer --vector-contract-to-ukernels  --split-input-file  | FileCheck -check-prefix=CHECK %s
-// RUN: tpp-opt %s --tile-brgemm-linalg="registerBlocking=6,8,1" --loop-invariant-code-motion --vectorization-pass --hoist-vector-transfer --vector-contract-to-ukernels  --split-input-file  | FileCheck -check-prefix=CHECK1 %s
-// RUN: tpp-opt %s --tile-brgemm-linalg="registerBlocking=6,64,4" --loop-invariant-code-motion --vectorization-pass --hoist-vector-transfer --vector-contract-to-ukernels  --split-input-file  | FileCheck -check-prefix=CHECK2 %s
+// RUN: tpp-opt %s --tile-brgemm-linalg="registerBlocking=6,64,1" --loop-invariant-code-motion --vectorization-pass --hoist-vector-transfer --vector-contract-to-micro-kernels  --split-input-file  | FileCheck -check-prefix=CHECK %s
+// RUN: tpp-opt %s --tile-brgemm-linalg="registerBlocking=6,8,1" --loop-invariant-code-motion --vectorization-pass --hoist-vector-transfer --vector-contract-to-micro-kernels  --split-input-file  | FileCheck -check-prefix=CHECK1 %s
+// RUN: tpp-opt %s --tile-brgemm-linalg="registerBlocking=6,64,4" --loop-invariant-code-motion --vectorization-pass --hoist-vector-transfer --vector-contract-to-micro-kernels  --split-input-file  | FileCheck -check-prefix=CHECK2 %s
 
 module {
  func.func @optimal_register_allocation(%arg0: memref<32x24x32xf32>, %arg1: memref<32x32x64xf32>, %arg2: memref<24x64xf32>) -> memref<24x64xf32> {
