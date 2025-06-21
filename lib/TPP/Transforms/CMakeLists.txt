@@ -33,6 +33,8 @@ add_mlir_library(TPPTransforms
   VectorContractToBF16DotProduct.cpp
   VectorContractToAMX.cpp
   VectorContractToMicroKernels.cpp
+  RegisterBlocking.cpp
+  LinalgVectorize.cpp
 
   ADDITIONAL_HEADER_DIRS
     ${PROJECT_SOURCE_DIR}/include/TPP
