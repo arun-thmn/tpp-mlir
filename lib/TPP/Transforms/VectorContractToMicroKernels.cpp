@@ -1,4 +1,4 @@
-//===- VectorContractToMicroKernels.cpp -----------------------*- C++-*-===//
+//===- VectorContractToMicroKernels.cpp --------------------------*- C++-*-===//
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
@@ -205,7 +205,7 @@ static bool permutationCheck(vector::ContractionOp contractOp,
 static memref::AllocOp createMask(Location loc, PatternRewriter &rewriter,
                                   Value indexOp_c0, int64_t sizeFactor,
                                   Type i32Type) {
-  auto intAttr = rewriter.getI32IntegerAttr(-65536);
+  auto intAttr = rewriter.getI32IntegerAttr(0xFFFF0000);
   auto maskConst =
       rewriter.create<mlir::arith::ConstantOp>(loc, i32Type, intAttr);
   auto mBcst = rewriter.create<vector::BroadcastOp>(

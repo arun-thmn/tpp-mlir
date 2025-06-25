@@ -151,7 +151,10 @@ def MicroKernels : Pass<"vector-contract-to-micro-kernels"> {
    let description = [{Add commentMore actions
      Perform  micro kernel lowering of vector contraction operation.
    }];
-   let dependentDialects = [ "vector::VectorDialect", "scf::SCFDialect", "x86vector::X86VectorDialect" ];
+   let dependentDialects = [ "vector::VectorDialect", 
+			     "scf::SCFDialect", 
+			     "arith::ArithDialect",
+			     "x86vector::X86VectorDialect" ];
 }
 
 def ConvertXsmmToFunc : Pass<"convert-xsmm-to-func", "ModuleOp"> {
