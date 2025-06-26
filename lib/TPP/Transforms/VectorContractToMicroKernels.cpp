@@ -1141,7 +1141,6 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
             addOp = add_Op;
           }
           if (auto max_Op = dyn_cast<arith::MaximumFOp>(read_users)) {
-            if (addOp)
               maxOp = max_Op;
           }
         }
