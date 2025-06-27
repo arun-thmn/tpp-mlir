@@ -1,6 +1,4 @@
 // RUN: tpp-opt %s --vector-contract-to-micro-kernels  --split-input-file  | FileCheck -check-prefix=CHECK %s
-// RUN: tpp-opt %s --vector-contract-to-micro-kernels  --split-input-file  | FileCheck -check-prefix=CHECK1 %s
-// RUN: tpp-opt %s --vector-contract-to-micro-kernels  --split-input-file  | FileCheck -check-prefix=CHECKBF16 %s
 
 
 #map = affine_map<(d0, d1, d2, d3) -> (d0, d1, d3)>
@@ -38,21 +36,21 @@ module {
 }
 
 // CHECK-LABEL:   func.func @optimal_register_allocation_gemm
-// CHECK: vector.fma
-// CHECK-NEXT: vector.fma
-// CHECK-NEXT: vector.fma
+// CHECK: vector.fma{{.*}}vector<8xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<8xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<8xf32>
 // CHECK-NEXT: vector.load
-// CHECK-NEXT: vector.fma
-// CHECK-NEXT: vector.fma
-// CHECK-NEXT: vector.fma
+// CHECK-NEXT: vector.fma{{.*}}vector<8xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<8xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<8xf32>
 // CHECK-NEXT: vector.load
-// CHECK-NEXT: vector.fma
-// CHECK-NEXT: vector.fma
-// CHECK-NEXT: vector.fma
+// CHECK-NEXT: vector.fma{{.*}}vector<8xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<8xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<8xf32>
 // CHECK-NEXT: vector.load
-// CHECK-NEXT: vector.fma
-// CHECK-NEXT: vector.fma
-// CHECK-NEXT: vector.fma
+// CHECK-NEXT: vector.fma{{.*}}vector<8xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<8xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<8xf32>
 
 // -----
 
@@ -91,9 +89,9 @@ module {
   }
 }
 
-// CHECK1-LABEL: func.func @no_lowering_k_4
-// CHECK1-NOT: vector.fma
-// CHECK1: vector.contract
+// CHECK-LABEL: func.func @no_lowering_k_4
+// CHECK-NOT: vector.fma
+// CHECK: vector.contract
 
 // -----
 
@@ -143,7 +141,7 @@ module {
 }
 
 
-// CHECKBF16-LABEL: func.func @mlp_bf16
-// CHECKBF16-COUNT-16: vector.fma
-// CHECKBF16-NOT: vector.transfer_read
-// CHECKBF16-NOT: vector.transfer_write
+// CHECK-LABEL: func.func @mlp_bf16
+// CHECK-COUNT-16: vector.fma{{.*}}vector<8xf32>
+// CHECK-NOT: vector.transfer_read
+// CHECK-NOT: vector.transfer_write

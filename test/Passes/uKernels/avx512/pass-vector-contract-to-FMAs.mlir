@@ -36,40 +36,40 @@ module {
 }
 
 // CHECK-LABEL:   func.func @optimal_register_allocation_gemm
-// CHECK: vector.fma
-// CHECK-NEXT: vector.fma
-// CHECK-NEXT: vector.fma
-// CHECK-NEXT: vector.fma
+// CHECK: vector.fma{{.*}}vector<16xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<16xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<16xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<16xf32>
 // CHECK-NEXT: vector.load
 // CHECK-NEXT: vector.broadcast
-// CHECK-NEXT: vector.fma
-// CHECK-NEXT: vector.fma
-// CHECK-NEXT: vector.fma
-// CHECK-NEXT: vector.fma
+// CHECK-NEXT: vector.fma{{.*}}vector<16xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<16xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<16xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<16xf32>
 // CHECK-NEXT: vector.load
 // CHECK-NEXT: vector.broadcast
-// CHECK-NEXT: vector.fma
-// CHECK-NEXT: vector.fma
-// CHECK-NEXT: vector.fma
-// CHECK-NEXT: vector.fma
+// CHECK-NEXT: vector.fma{{.*}}vector<16xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<16xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<16xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<16xf32>
 // CHECK-NEXT: vector.load
 // CHECK-NEXT: vector.broadcast
-// CHECK-NEXT: vector.fma
-// CHECK-NEXT: vector.fma
-// CHECK-NEXT: vector.fma
-// CHECK-NEXT: vector.fma
+// CHECK-NEXT: vector.fma{{.*}}vector<16xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<16xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<16xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<16xf32>
 // CHECK-NEXT: vector.load
 // CHECK-NEXT: vector.broadcast
-// CHECK-NEXT: vector.fma
-// CHECK-NEXT: vector.fma
-// CHECK-NEXT: vector.fma
-// CHECK-NEXT: vector.fma
+// CHECK-NEXT: vector.fma{{.*}}vector<16xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<16xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<16xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<16xf32>
 // CHECK-NEXT: vector.load
 // CHECK-NEXT: vector.broadcast
-// CHECK-NEXT: vector.fma
-// CHECK-NEXT: vector.fma
-// CHECK-NEXT: vector.fma
-// CHECK-NEXT: vector.fma
+// CHECK-NEXT: vector.fma{{.*}}vector<16xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<16xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<16xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<16xf32>
 
 // -----
 

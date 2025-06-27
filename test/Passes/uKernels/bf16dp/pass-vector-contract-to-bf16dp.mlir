@@ -1,5 +1,4 @@
 // RUN: tpp-opt %s --vector-contract-to-micro-kernels  --split-input-file  | FileCheck -check-prefix=CHECK %s
-// RUN: tpp-opt %s --vector-contract-to-micro-kernels  --split-input-file  | FileCheck -check-prefix=CHECK1 %s
 
 
 #map = affine_map<(d0, d1, d2, d3, d4) -> (d0, d2, d4, d1)>
@@ -136,7 +135,7 @@ module {
   }
 }
 
-// CHECK1-LABEL: func.func @mlp_bf16
-// CHECK1-COUNT-4: x86vector.avx512.dot
-// CHECK1-NOT: vector.transfer_read
-// CHECK1-NOT: vector.transfer_write
+// CHECK-LABEL: func.func @mlp_bf16
+// CHECK-COUNT-4: x86vector.avx512.dot
+// CHECK-NOT: vector.transfer_read
+// CHECK-NOT: vector.transfer_write
