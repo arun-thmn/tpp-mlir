@@ -58,7 +58,9 @@ private:
     // lowering to micro-kernels on EMR. Bf16DotProduct tests with k = 1 
     // and those tests gets lowered by AMX pass on EMR machine.
     pm.addNestedPass<func::FuncOp>(createHoistVectorTransfers());
-    pm.addNestedPass<func::FuncOp>(createMicroKernels());
+    MicroKernelsOptions options;
+    options.targetFeature = vecBundleCpuTargetFeature;
+    pm.addNestedPass<func::FuncOp>(createMicroKernels(options));
     if (vnni::utils::hasAMX())
       pm.addNestedPass<func::FuncOp>(createVectorContractToAMX());
     pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());

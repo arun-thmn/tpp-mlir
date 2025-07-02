@@ -155,6 +155,10 @@ def MicroKernels : Pass<"vector-contract-to-micro-kernels"> {
 			     "scf::SCFDialect", 
 			     "arith::ArithDialect",
 			     "x86vector::X86VectorDialect" ];
+  let options = [
+         Option<"targetFeature", "target-feature", "std::string", "",
+                "Target feature for a given architecture">,
+  ];
 }
 
 def ConvertXsmmToFunc : Pass<"convert-xsmm-to-func", "ModuleOp"> {

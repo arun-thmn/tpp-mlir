@@ -10,6 +10,7 @@
 // Target types: f32, bf16 and f16
 //
 //===----------------------------------------------------------------------===//
+#include "TPP/Passes.h"
 #include "TPP/Transforms/Utils/VNNIUtils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -230,6 +231,9 @@ static memref::AllocOp createMask(Location loc, PatternRewriter &rewriter,
 struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
   using OpRewritePattern<vector::ContractionOp>::OpRewritePattern;
 
+  MicroKernelsOp(MLIRContext *ctx, MicroKernelsOptions options)
+      : OpRewritePattern<vector::ContractionOp>(ctx), options(options) {}
+
   LogicalResult matchAndRewrite(vector::ContractionOp contractOp,
                                 PatternRewriter &rewriter) const override {
 
@@ -267,6 +271,11 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
     // We get target architecture and decide on uKernel lowering using flags
     bool avx512 = vnni::utils::hasAVX512();
     bool avx2 = vnni::utils::hasAVX2();
+
+    // disable avx512, if target feature is avx2
+    if (options.targetFeature == "avx2")
+      avx512 = false;
+
     int64_t sizeFactor = avx512 ? 16 : avx2 ? 8 : 0;
 
     if (sizeFactor == 0)
@@ -290,10 +299,10 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
       if (cpuName == "SRF")
         srf = true;
 
-      if (cpuName == "CPX_SPR")
+      if (cpuName == "CPX_SPR" && avx512)
         bf16dp = true;
 
-      if (cpuName == "GEN")
+      if (!(srf || bf16dp))
         fallback = true;
     }
 
@@ -1141,7 +1150,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
             addOp = add_Op;
           }
           if (auto max_Op = dyn_cast<arith::MaximumFOp>(read_users)) {
-              maxOp = max_Op;
+            maxOp = max_Op;
           }
         }
       }
@@ -1327,18 +1336,24 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
 
     return success();
   }
+
+private:
+  MicroKernelsOptions options;
 };
 
-void populateMicroKernelsPatterns(RewritePatternSet &patterns) {
-  patterns.add<MicroKernelsOp>(patterns.getContext());
+void populateMicroKernelsPatterns(RewritePatternSet &patterns,
+                                  MicroKernelsOptions options) {
+  patterns.add<MicroKernelsOp>(patterns.getContext(), options);
 }
 
 struct MicroKernels : public impl::MicroKernelsBase<MicroKernels> {
   using MicroKernelsBase::MicroKernelsBase;
 
   void runOnOperation() override {
+    MicroKernelsOptions options;
+    options.targetFeature = targetFeature;
     RewritePatternSet patterns(&getContext());
-    populateMicroKernelsPatterns(patterns);
+    populateMicroKernelsPatterns(patterns, options);
     GreedyRewriteConfig config;
     config.setStrictness(GreedyRewriteStrictness::ExistingOps);
     (void)applyPatternsGreedily(getOperation(), std::move(patterns), config);

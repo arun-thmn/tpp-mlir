@@ -1,4 +1,4 @@
-// RUN: tpp-opt %s --vector-contract-to-micro-kernels  --split-input-file  | FileCheck -check-prefix=CHECK %s
+// RUN: tpp-opt %s --vector-contract-to-micro-kernels="target-feature=avx2"  --split-input-file  | FileCheck -check-prefix=CHECK %s
 
 
 #map = affine_map<(d0, d1, d2, d3) -> (d0, d1, d3)>
