@@ -265,8 +265,14 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
     // Retrive the element type (f32 or bf16 or f16)
     auto subviewOpAcc =
         vectorReadOpAcc.getOperand(0).getDefiningOp<memref::SubViewOp>();
+    auto subviewOpLhs = 
+	vectorReadOpLhs.getOperand(0).getDefiningOp<memref::SubViewOp>();
+
+
     auto elementType =
-        (cast<MemRefType>(subviewOpAcc.getType())).getElementType();
+        (cast<MemRefType>(subviewOpLhs.getType())).getElementType();
+    auto outsElementType=
+	(cast<MemRefType>(subviewOpAcc.getType())).getElementType();
 
     // We get target architecture and decide on uKernel lowering using flags
     bool avx512 = vnni::utils::hasAVX512();
@@ -422,7 +428,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
     // C matrix load:
     // f32 - just load the matrix as f32 type
     // bf16 and f16 - load the matrix up-convert to f32
-    if (isBF16) {
+    if (isBF16 && outsElementType.isBF16()) {
       for (int j = 0; j < N; j = j + sizeFactor) {
         for (int i = 0; i < M; i++) {
           Value indexOp_A = rewriter.create<arith::ConstantIndexOp>(
@@ -451,7 +457,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
       }
     }
 
-    if (isF16) {
+    if (isF16 && outsElementType.isF16()) {
       for (int j = 0; j < N; j = j + sizeFactor) {
         for (int i = 0; i < M; i++) {
           Value indexOp_A = rewriter.create<arith::ConstantIndexOp>(
@@ -470,7 +476,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
       }
     }
 
-    if (isF32) {
+    if (isF32 || outsElementType.isF32()) {
       for (int j = 0; j < N; j = j + sizeFactor) {
         for (int i = 0; i < M; i++) {
           Value indexOp_A = rewriter.create<arith::ConstantIndexOp>(
@@ -478,7 +484,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
           Value indexOp_B = rewriter.create<arith::ConstantIndexOp>(
               reductionForOp.getLoc(), j);
           auto valueCRow = rewriter.create<vector::LoadOp>(
-              reductionForOp.getLoc(), VectorType::get(sizeFactor, elementType),
+              reductionForOp.getLoc(), VectorType::get(sizeFactor, outsElementType),
               subviewOpAcc, ValueRange{indexOp_A, indexOp_B});
           loopItrArgs.push_back(valueCRow);
         }
@@ -1290,7 +1296,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
         }
 
         // We do arith.tuncf for f32 -> bf16 in SRF/ARL/SPR kind of machines
-        if (srf || bf16dp) {
+        if ((srf || bf16dp) && !outsElementType.isF32()) {
           vec_final = rewriter.create<arith::TruncFOp>(
               reductionForOp.getLoc(), VectorType::get(sizeFactor, type),
               acc_value);
