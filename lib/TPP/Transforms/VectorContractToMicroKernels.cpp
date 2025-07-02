@@ -428,7 +428,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
     // C matrix load:
     // f32 - just load the matrix as f32 type
     // bf16 and f16 - load the matrix up-convert to f32
-    if (isBF16 && outsElementType.isBF16()) {
+    if (outsElementType.isBF16()) {
       for (int j = 0; j < N; j = j + sizeFactor) {
         for (int i = 0; i < M; i++) {
           Value indexOp_A = rewriter.create<arith::ConstantIndexOp>(
@@ -457,7 +457,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
       }
     }
 
-    if (isF16 && outsElementType.isF16()) {
+    if (outsElementType.isF16()) {
       for (int j = 0; j < N; j = j + sizeFactor) {
         for (int i = 0; i < M; i++) {
           Value indexOp_A = rewriter.create<arith::ConstantIndexOp>(
@@ -476,7 +476,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
       }
     }
 
-    if (isF32 || outsElementType.isF32()) {
+    if (outsElementType.isF32()) {
       for (int j = 0; j < N; j = j + sizeFactor) {
         for (int i = 0; i < M; i++) {
           Value indexOp_A = rewriter.create<arith::ConstantIndexOp>(
