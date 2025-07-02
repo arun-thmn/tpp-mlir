@@ -436,7 +436,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
           Value indexOp_B = rewriter.create<arith::ConstantIndexOp>(
               reductionForOp.getLoc(), j);
           auto valueCRow = rewriter.create<vector::LoadOp>(
-              reductionForOp.getLoc(), VectorType::get(sizeFactor, elementType),
+              reductionForOp.getLoc(), VectorType::get(sizeFactor, outsElementType),
               subviewOpAcc, ValueRange{indexOp_A, indexOp_B});
           auto bitcast_i16 = rewriter.create<vector::BitCastOp>(
               reductionForOp.getLoc(), VectorType::get(sizeFactor, i16Type),
@@ -465,7 +465,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
           Value indexOp_B = rewriter.create<arith::ConstantIndexOp>(
               reductionForOp.getLoc(), j);
           auto valueCRow = rewriter.create<vector::LoadOp>(
-              reductionForOp.getLoc(), VectorType::get(sizeFactor, elementType),
+              reductionForOp.getLoc(), VectorType::get(sizeFactor, outsElementType),
               subviewOpAcc, ValueRange{indexOp_A, indexOp_B});
           auto f32CVector = rewriter.create<arith::ExtFOp>(
               reductionForOp.getLoc(),
@@ -1274,7 +1274,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
 
         // We do f32 -> bf16 downconvert using rshift, truncate and rounding the
         // lsb for the fallback case.
-        if (fallback && isBF16) {
+        if (fallback && isBF16 && !outsElementType.isF32()) {
           auto vec = rewriter.create<vector::BitCastOp>(
               kForOp.getLoc(), VectorType::get(sizeFactor, i32Type), acc_value);
           auto rshift = rewriter.create<arith::ShRUIOp>(
