@@ -412,6 +412,10 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
     // matrix then broadcast A ony-by-one + FMA.
     // If N > M: perform opposite. Broadcast A matrix then load B one-by-
     // one + FMA.
+    // Following this kind of lowering, we reduce the register loads by 
+    // stacking the less B loads or less A broadcasts and do the larger B 
+    // loads or A broadcast in a LIFO manner. Finally, it helps in reducing
+    // the probablity of register spills.
     bool mDriven = true;
     int64_t nBlock = N / sizeFactor;
 
