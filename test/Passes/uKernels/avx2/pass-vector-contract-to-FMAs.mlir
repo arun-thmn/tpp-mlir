@@ -54,6 +54,63 @@ module {
 
 // -----
 
+#map_nm = affine_map<(d0, d1, d2, d3) -> (d0, d1, d3)>
+#map_nm1 = affine_map<(d0, d1, d2, d3) -> (d0, d3, d2)>
+#map_nm2 = affine_map<(d0, d1, d2, d3) -> (d1, d2)>
+module {
+  func.func @opt_register_4x3(%arg0: memref<1x4x32xf32>, %arg1: memref<1x32x24xf32>, %arg2: memref<4x24xf32>) -> memref<4x24xf32> {
+    %cst = arith.constant 0.000000e+00 : f32
+    %c0 = arith.constant 0 : index
+    %c4 = arith.constant 4 : index
+    %c24 = arith.constant 24 : index
+    %c1 = arith.constant 1 : index
+    %c32 = arith.constant 32 : index
+    scf.for %arg3 = %c0 to %c4 step %c4 {
+      scf.for %arg4 = %c0 to %c24 step %c24 {
+        %subview = memref.subview %arg2[%arg3, %arg4] [4, 24] [1, 1] : memref<4x24xf32> to memref<4x24xf32, strided<[24, 1], offset: ?>>
+        %0 = vector.transfer_read %subview[%c0, %c0], %cst {in_bounds = [true, true]} : memref<4x24xf32, strided<[24, 1], offset: ?>>, vector<4x24xf32>
+        %1 = scf.for %arg5 = %c0 to %c1 step %c1 iter_args(%arg6 = %0) -> (vector<4x24xf32>) {
+          %2 = scf.for %arg7 = %c0 to %c32 step %c1 iter_args(%arg8 = %arg6) -> (vector<4x24xf32>) {
+            %subview_0 = memref.subview %arg0[%arg5, %arg3, %arg7] [1, 4, 1] [1, 1, 1] : memref<1x4x32xf32> to memref<1x4x1xf32, strided<[128, 32, 1], offset: ?>>
+            %subview_1 = memref.subview %arg1[%arg5, %arg7, %arg4] [1, 1, 24] [1, 1, 1] : memref<1x32x24xf32> to memref<1x1x24xf32, strided<[768, 24, 1], offset: ?>>
+            %3 = vector.transfer_read %subview_0[%c0, %c0, %c0], %cst {in_bounds = [true, true, true]} : memref<1x4x1xf32, strided<[128, 32, 1], offset: ?>>, vector<1x4x1xf32>
+            %4 = vector.transfer_read %subview_1[%c0, %c0, %c0], %cst {in_bounds = [true, true, true]} : memref<1x1x24xf32, strided<[768, 24, 1], offset: ?>>, vector<1x1x24xf32>
+            %5 = vector.contract {indexing_maps = [#map_nm, #map_nm1, #map_nm2], iterator_types = ["reduction", "parallel", "parallel", "reduction"], kind = #vector.kind<add>} %3, %4, %arg8 : vector<1x4x1xf32>, vector<1x1x24xf32> into vector<4x24xf32>
+            scf.yield %5 : vector<4x24xf32>
+          }
+          scf.yield %2 : vector<4x24xf32>
+        }
+        vector.transfer_write %1, %subview[%c0, %c0] {in_bounds = [true, true]} : vector<4x24xf32>, memref<4x24xf32, strided<[24, 1], offset: ?>>
+      }
+    }
+    return %arg2 : memref<4x24xf32>
+  }
+}
+
+// CHECK-LABEL:   func.func @opt_register_4x3
+// CHECK: scf.for
+// CHECK: vector.broadcast
+// CHECK-NEXT: vector.fma{{.*}}vector<8xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<8xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<8xf32>
+// CHECK-NEXT: vector.load
+// CHECK-NEXT: vector.broadcast
+// CHECK-NEXT: vector.fma{{.*}}vector<8xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<8xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<8xf32>
+// CHECK-NEXT: vector.load
+// CHECK-NEXT: vector.broadcast
+// CHECK-NEXT: vector.fma{{.*}}vector<8xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<8xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<8xf32>
+// CHECK-NEXT: vector.load
+// CHECK-NEXT: vector.broadcast
+// CHECK-NEXT: vector.fma{{.*}}vector<8xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<8xf32>
+// CHECK-NEXT: vector.fma{{.*}}vector<8xf32>
+
+// -----
+
 #no_map = affine_map<(d0, d1, d2, d3) -> (d0, d1, d3)>
 #no_map1 = affine_map<(d0, d1, d2, d3) -> (d0, d3, d2)>
 #no_map2 = affine_map<(d0, d1, d2, d3) -> (d1, d2)>
