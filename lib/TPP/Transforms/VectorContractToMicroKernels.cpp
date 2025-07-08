@@ -265,14 +265,13 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
     // Retrive the element type (f32 or bf16 or f16)
     auto subviewOpAcc =
         vectorReadOpAcc.getOperand(0).getDefiningOp<memref::SubViewOp>();
-    auto subviewOpLhs = 
-	vectorReadOpLhs.getOperand(0).getDefiningOp<memref::SubViewOp>();
-
+    auto subviewOpLhs =
+        vectorReadOpLhs.getOperand(0).getDefiningOp<memref::SubViewOp>();
 
     auto elementType =
         (cast<MemRefType>(subviewOpLhs.getType())).getElementType();
-    auto outsElementType=
-	(cast<MemRefType>(subviewOpAcc.getType())).getElementType();
+    auto outsElementType =
+        (cast<MemRefType>(subviewOpAcc.getType())).getElementType();
 
     // We get target architecture and decide on uKernel lowering using flags
     bool avx512 = vnni::utils::hasAVX512();
@@ -409,15 +408,15 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
       return rewriter.notifyMatchFailure(
           contractOp, "Affine map permutation not supported.");
 
-    // Lowering is done based on M and N tile sizes. If M >= N: load all B 
+    // Lowering is done based on M and N tile sizes. If M >= N: load all B
     // matrix then broadcast A ony-by-one + FMA.
     // If N > M: perform opposite. Broadcast A matrix then load B one-by-
-    // one + FMA. 
+    // one + FMA.
     bool mDriven = true;
-    int64_t nBlock = N/sizeFactor;
+    int64_t nBlock = N / sizeFactor;
 
     if (nBlock > M)
-            mDriven = false;
+      mDriven = false;
 
     rewriter.setInsertionPoint(mForOp);
     auto i32Type = rewriter.getIntegerType(32);
@@ -446,8 +445,9 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
           Value indexOp_B = rewriter.create<arith::ConstantIndexOp>(
               reductionForOp.getLoc(), j);
           auto valueCRow = rewriter.create<vector::LoadOp>(
-              reductionForOp.getLoc(), VectorType::get(sizeFactor, outsElementType),
-              subviewOpAcc, ValueRange{indexOp_A, indexOp_B});
+              reductionForOp.getLoc(),
+              VectorType::get(sizeFactor, outsElementType), subviewOpAcc,
+              ValueRange{indexOp_A, indexOp_B});
           auto bitcast_i16 = rewriter.create<vector::BitCastOp>(
               reductionForOp.getLoc(), VectorType::get(sizeFactor, i16Type),
               valueCRow);
@@ -475,8 +475,9 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
           Value indexOp_B = rewriter.create<arith::ConstantIndexOp>(
               reductionForOp.getLoc(), j);
           auto valueCRow = rewriter.create<vector::LoadOp>(
-              reductionForOp.getLoc(), VectorType::get(sizeFactor, outsElementType),
-              subviewOpAcc, ValueRange{indexOp_A, indexOp_B});
+              reductionForOp.getLoc(),
+              VectorType::get(sizeFactor, outsElementType), subviewOpAcc,
+              ValueRange{indexOp_A, indexOp_B});
           auto f32CVector = rewriter.create<arith::ExtFOp>(
               reductionForOp.getLoc(),
               VectorType::get({8}, rewriter.getF32Type()),
@@ -494,8 +495,9 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
           Value indexOp_B = rewriter.create<arith::ConstantIndexOp>(
               reductionForOp.getLoc(), j);
           auto valueCRow = rewriter.create<vector::LoadOp>(
-              reductionForOp.getLoc(), VectorType::get(sizeFactor, outsElementType),
-              subviewOpAcc, ValueRange{indexOp_A, indexOp_B});
+              reductionForOp.getLoc(),
+              VectorType::get(sizeFactor, outsElementType), subviewOpAcc,
+              ValueRange{indexOp_A, indexOp_B});
           loopItrArgs.push_back(valueCRow);
         }
       }
@@ -569,7 +571,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
                     rewriter.getIndexAttr(1), rewriter.getIndexAttr(1),
                     rewriter.getIndexAttr(1), rewriter.getIndexAttr(1)};
 
-                // uKernel lowering for f32 type. M -> N. 
+                // uKernel lowering for f32 type. M -> N.
                 if (isF32 && mDriven) {
                   // Load elements of B matrix and store in a DS
                   for (int j = 0; j < N; j = j + sizeFactor) {
@@ -660,103 +662,106 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
                 // cpx (zen5) to target avx512bf16dp.
                 if (bf16dp && isBF16) {
 
+                  if (mDriven) { // M -> N
+                    // Load elements of B matrix and store in a DS
+                    for (int j = 0; j < N; j = j + sizeFactor) {
+                      Value indexOp_j = rewriter.create<arith::ConstantIndexOp>(
+                          reductionForOp.getLoc(), j);
+                      auto valueRow = rewriterNewKForOp.create<vector::LoadOp>(
+                          kForOp.getLoc(), VectorType::get(32, elementType),
+                          rhsClone->getResult(0),
+                          ValueRange{indexOp_c0, indexOp_c0, indexOp_j,
+                                     indexOp_c0});
+                      matf32.push_back(valueRow);
+                    }
 
-		  if (mDriven) { // M -> N
-                  // Load elements of B matrix and store in a DS
-                  for (int j = 0; j < N; j = j + sizeFactor) {
-                    Value indexOp_j = rewriter.create<arith::ConstantIndexOp>(
-                        reductionForOp.getLoc(), j);
-                    auto valueRow = rewriterNewKForOp.create<vector::LoadOp>(
-                        kForOp.getLoc(), VectorType::get(32, elementType),
-                        rhsClone->getResult(0),
-                        ValueRange{indexOp_c0, indexOp_c0, indexOp_j,
-                                   indexOp_c0});
-                    matf32.push_back(valueRow);
-                  }
+                    // Load elements of A matrix, do FMA, and store in a DS
+                    for (int i = 0; i < M; i++) {
+                      Value indexOp_i = rewriter.create<arith::ConstantIndexOp>(
+                          reductionForOp.getLoc(), i);
+                      auto valueRow = rewriterNewKForOp.create<vector::LoadOp>(
+                          kForOp.getLoc(), VectorType::get({vnni}, elementType),
+                          lhsClone->getResult(0),
+                          ValueRange{indexOp_c0, indexOp_i, indexOp_c0,
+                                     indexOp_c0});
+                      auto bitcastValue_i32 =
+                          rewriterNewKForOp.create<vector::BitCastOp>(
+                              kForOp.getLoc(), VectorType::get({1}, i32Type),
+                              valueRow);
+                      auto bcst_i32 =
+                          rewriterNewKForOp.create<vector::BroadcastOp>(
+                              kForOp.getLoc(),
+                              VectorType::get(sizeFactor, i32Type),
+                              bitcastValue_i32);
+                      auto valuef32 =
+                          rewriterNewKForOp.create<vector::BitCastOp>(
+                              kForOp.getLoc(),
+                              VectorType::get(32,
+                                              rewriterNewKForOp.getBF16Type()),
+                              bcst_i32);
+                      for (int j = 0; j < (N / sizeFactor); j++) {
+                        auto dp = rewriter.create<mlir::x86vector::DotBF16Op>(
+                            kForOp.getLoc(), dstType,
+                            iterArgsNewKForOp[i + (j * M)], valuef32,
+                            matf32[j]);
+                        oddFMAs.push_back(dp);
+                      }
+                    }
 
-                  // Load elements of A matrix, do FMA, and store in a DS
-                  for (int i = 0; i < M; i++) { 
-                    Value indexOp_i = rewriter.create<arith::ConstantIndexOp>(
-                        reductionForOp.getLoc(), i);
-                    auto valueRow = rewriterNewKForOp.create<vector::LoadOp>(
-                        kForOp.getLoc(), VectorType::get({vnni}, elementType),
-                        lhsClone->getResult(0),
-                        ValueRange{indexOp_c0, indexOp_i, indexOp_c0,
-                                   indexOp_c0});
-                    auto bitcastValue_i32 =
-                        rewriterNewKForOp.create<vector::BitCastOp>(
-                        kForOp.getLoc(), VectorType::get({1},
-                        i32Type), valueRow);
-                    auto bcst_i32 =
-                        rewriterNewKForOp.create<vector::BroadcastOp>(
-                            kForOp.getLoc(), VectorType::get(sizeFactor,
-                            i32Type), bitcastValue_i32);
-                    auto valuef32 = rewriterNewKForOp.create<vector::BitCastOp>(
-                        kForOp.getLoc(),
-                        VectorType::get(32, rewriterNewKForOp.getBF16Type()),
-                        bcst_i32);
+                    // Re-arrange the stored FMAs in order of N -> M.
+                    // We load C matrix with N -> M. For example: c[0][0],
+                    // c[1][0] We do dp as M -> N order { [0][0], [0][16] ...}.
+                    // So, shuffling the M -> N to N -> M order
                     for (int j = 0; j < (N / sizeFactor); j++) {
-                      auto dp = rewriter.create<mlir::x86vector::DotBF16Op>(
-                          kForOp.getLoc(), dstType,
-                          iterArgsNewKForOp[i + (j * M)], valuef32, matf32[j]);
-                      oddFMAs.push_back(dp);
+                      for (int i = 0; i < M; i++) {
+                        evenFMAs.push_back(oddFMAs[j + (i * (N / sizeFactor))]);
+                      }
                     }
-                  }
 
-                  // Re-arrange the stored FMAs in order of N -> M.
-                  // We load C matrix with N -> M. For example: c[0][0], c[1][0]
-                  // We do dp as M -> N order { [0][0], [0][16] ...}. So,
-                  // shuffling the M -> N to N -> M order
-                  for (int j = 0; j < (N / sizeFactor); j++) {
+                  } else { // N -> M
                     for (int i = 0; i < M; i++) {
-                      evenFMAs.push_back(oddFMAs[j + (i * (N / sizeFactor))]);
+                      Value indexOp_i = rewriter.create<arith::ConstantIndexOp>(
+                          reductionForOp.getLoc(), i);
+                      auto valueRow = rewriterNewKForOp.create<vector::LoadOp>(
+                          kForOp.getLoc(), VectorType::get({vnni}, elementType),
+                          lhsClone->getResult(0),
+                          ValueRange{indexOp_c0, indexOp_i, indexOp_c0,
+                                     indexOp_c0});
+                      auto bitcastValue_i32 =
+                          rewriterNewKForOp.create<vector::BitCastOp>(
+                              kForOp.getLoc(), VectorType::get({1}, i32Type),
+                              valueRow);
+                      auto bcst_i32 =
+                          rewriterNewKForOp.create<vector::BroadcastOp>(
+                              kForOp.getLoc(),
+                              VectorType::get(sizeFactor, i32Type),
+                              bitcastValue_i32);
+                      auto valuef32 =
+                          rewriterNewKForOp.create<vector::BitCastOp>(
+                              kForOp.getLoc(),
+                              VectorType::get(32,
+                                              rewriterNewKForOp.getBF16Type()),
+                              bcst_i32);
+                      matf32.push_back(valuef32);
+                    }
+
+                    for (int j = 0, k = 0; j < N; j = j + sizeFactor) {
+                      Value indexOp_j = rewriter.create<arith::ConstantIndexOp>(
+                          reductionForOp.getLoc(), j);
+                      auto valueRow = rewriterNewKForOp.create<vector::LoadOp>(
+                          kForOp.getLoc(), VectorType::get(32, elementType),
+                          rhsClone->getResult(0),
+                          ValueRange{indexOp_c0, indexOp_c0, indexOp_j,
+                                     indexOp_c0});
+                      for (int i = 0; i < M; i++) {
+                        auto dp = rewriter.create<mlir::x86vector::DotBF16Op>(
+                            kForOp.getLoc(), dstType, iterArgsNewKForOp[k],
+                            matf32[i], valueRow);
+                        k++;
+                        evenFMAs.push_back(dp);
+                      }
                     }
                   }
-
-		  } else {  // N -> M
-		    for (int i = 0; i < M; i++) {
-                    Value indexOp_i = rewriter.create<arith::ConstantIndexOp>(
-                        reductionForOp.getLoc(), i);
-                    auto valueRow = rewriterNewKForOp.create<vector::LoadOp>(
-                        kForOp.getLoc(), VectorType::get({vnni}, elementType),
-                        lhsClone->getResult(0),
-                        ValueRange{indexOp_c0, indexOp_i, indexOp_c0,
-                                   indexOp_c0});
-                    auto bitcastValue_i32 =
-                        rewriterNewKForOp.create<vector::BitCastOp>(
-                            kForOp.getLoc(),
-                            VectorType::get({1}, i32Type), valueRow);
-                    auto bcst_i32 =
-                        rewriterNewKForOp.create<vector::BroadcastOp>(
-                            kForOp.getLoc(),
-                            VectorType::get(sizeFactor, i32Type),
-                            bitcastValue_i32);
-                    auto valuef32 = rewriterNewKForOp.create<vector::BitCastOp>(
-                        kForOp.getLoc(),
-                        VectorType::get(32, rewriterNewKForOp.getBF16Type()),
-                        bcst_i32);
-                    matf32.push_back(valuef32);
-                  }
-
-		   for (int j = 0, k = 0; j < N; j = j + sizeFactor) {
-                    Value indexOp_j = rewriter.create<arith::ConstantIndexOp>(
-                        reductionForOp.getLoc(), j);
-                    auto valueRow = rewriterNewKForOp.create<vector::LoadOp>(
-                        kForOp.getLoc(), VectorType::get(32, elementType),
-                        rhsClone->getResult(0),
-                        ValueRange{indexOp_c0, indexOp_c0, indexOp_j,
-                                   indexOp_c0});
-                    for (int i = 0; i < M; i++) {
-                      auto dp = rewriter.create<mlir::x86vector::DotBF16Op>(
-                          kForOp.getLoc(), dstType,
-                          iterArgsNewKForOp[k], matf32[i], valueRow);
-                      k++;
-                      evenFMAs.push_back(dp);
-                    }
-                  }
-
-
-		  }
                 }
 
                 // bf16 type + fallback + avx512. uKernel lowering for machines
@@ -894,8 +899,8 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
                 // uKernel lowering for AVX2  machines
                 // Target: (a) f16 and bf16 for srf kind of machines
                 // (b) bf16 fallback + avx2 instructions.
-		// TODO: update lowering based on M & N. Now it is
-		// default to M -> N
+                // TODO: update lowering based on M & N. Now it is
+                // default to M -> N
                 if (srf || (fallback && avx2 && !avx512)) {
                   // Load odd elements of A Matrix and store in a DS
                   for (int i = 0; i < M; i++) {
