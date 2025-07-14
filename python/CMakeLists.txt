@@ -109,10 +109,6 @@ add_mlir_python_modules(TPPPythonModules
   DECLARED_SOURCES
   TPPPythonSources # These are the TPP-MLIR specific bits of the Python bindings
   LLVMSupport
-  MLIRPythonExtension.RegisterEverything # Generates whole mlir Python bindings
-  MLIRPythonSources.Core # Generates whole mlir Python bindings
-  MLIRPythonSources.Dialects # Generates whole mlir Python bindings
-  MLIRPythonSources.ExecutionEngine # Generates whole mlir Python bindings
   COMMON_CAPI_LINK_LIBS
   TPPPythonCAPI
   TPPTransforms
