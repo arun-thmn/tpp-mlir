@@ -22,12 +22,12 @@
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
+#include "mlir/Dialect/Transform/TuneExtension/TuneExtensionOps.h"
 
 #include "TPP/Dialect/Check/BufferizableOpInterfaceImpl.h"
 #include "TPP/Dialect/Check/CheckDialect.h"
 #include "TPP/Dialect/Perf/BufferizableOpInterfaceImpl.h"
 #include "TPP/Dialect/Perf/PerfDialect.h"
-#include "TPP/Dialect/Tune/TuneTransformOps.h"
 #include "TPP/Dialect/Xsmm/XsmmDialect.h"
 #include "TPP/PassBundles.h"
 #include "TPP/Passes.h"
@@ -53,7 +53,7 @@ int main(int argc, char **argv) {
   registerAllExtensions(registry);
   mlir::linalg::registerTransformDialectExtension(registry);
   mlir::tensor::registerTransformDialectExtension(registry);
-  mlir::tune::registerTransformDialectExtension(registry);
+  mlir::transform::registerTuneExtension(registry);
   registerAllToLLVMIRTranslations(registry);
 
   return mlir::asMainReturnCode(

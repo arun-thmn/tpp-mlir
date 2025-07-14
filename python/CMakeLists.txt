@@ -31,28 +31,10 @@ declare_mlir_dialect_python_bindings(
 declare_mlir_dialect_python_bindings(
   ADD_TO_PARENT TPPPythonSources.Dialects
   ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/mlir"
-  SOURCES
-  dialects/tune.py
-  DIALECT_NAME tune
-)
-
-declare_mlir_dialect_python_bindings(
-  ADD_TO_PARENT TPPPythonSources.Dialects
-  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/mlir"
   TD_FILE dialects/XsmmOps.td
   SOURCES
   dialects/xsmm.py
   DIALECT_NAME xsmm
-)
-
-declare_mlir_dialect_extension_python_bindings(
-  ADD_TO_PARENT TPPPythonSources.Dialects
-  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/mlir"
-  TD_FILE dialects/TuneTransformOps.td
-  SOURCES
-  dialects/transform/tune.py
-  DIALECT_NAME transform
-  EXTENSION_NAME tune_transform
 )
 
 declare_mlir_python_extension(TPPPythonSources.DialectExtension
@@ -109,6 +91,10 @@ add_mlir_python_modules(TPPPythonModules
   DECLARED_SOURCES
   TPPPythonSources # These are the TPP-MLIR specific bits of the Python bindings
   LLVMSupport
+  MLIRPythonExtension.RegisterEverything # Generates whole mlir Python bindings
+  MLIRPythonSources.Core # Generates whole mlir Python bindings
+  MLIRPythonSources.Dialects # Generates whole mlir Python bindings
+  MLIRPythonSources.ExecutionEngine # Generates whole mlir Python bindings
   COMMON_CAPI_LINK_LIBS
   TPPPythonCAPI
   TPPTransforms
