@@ -305,7 +305,7 @@ void MLIRBench::printVector(Value vector) {
   if (vectorValue.getElementType().isBF16()) {
     VectorType vecType =
         VectorType::get(vectorValue.getShape(), builder.getF32Type());
-    op = builder.create<arith::ExtFOp>(unkLoc, vecType, vector);
+    op = builder.create<arith::ExtFOp>(unkLoc, vecType, vector, arith::FastMathFlagsAttr{});
   }
   builder.create<vector::PrintOp>(unkLoc, op);
 }
