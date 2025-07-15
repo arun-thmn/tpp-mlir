@@ -22,7 +22,7 @@ module {
 // CHECK:       %[[vec0:.*]] = vector.transfer_read %[[subview]][%c0, %c0, %c0], %0 {in_bounds = [true, true, true]} : memref<4x8x2xf32, strided<[16, 2, 1], offset: ?>>, vector<4x8x2xf32>
 // CHECK:       %[[vec1:.*]] = vector.transfer_read %[[subview_0]][%c0, %c0, %c0], %0 {in_bounds = [true, true, true]} : memref<4x2x4xf32, strided<[8, 4, 1], offset: ?>>, vector<4x2x4xf32>
 // CHECK:       %[[vec2:.*]] = vector.transfer_read %[[subview_1]][%c0, %c0], %0 {in_bounds = [true, true]} : memref<8x4xf32, strided<[4, 1], offset: ?>>, vector<8x4xf32>
-// CHECK:       %[[vec3:.*]] = vector.contract {indexing_maps = [#map, #map1, #map2], iterator_types = ["reduction", "parallel", "parallel", "reduction"], kind = #vector.kind<add>} %1, %2, %3 : vector<4x8x2xf32>, vector<4x2x4xf32> into vector<8x4xf32>
+// CHECK:       %[[vec3:.*]] = vector.contract {indexing_maps = [#map, #map1, #map2], iterator_types = ["reduction", "parallel", "parallel", "reduction"], kind = #vector.kind<add>} %[[vec0]], %[[vec1]], %[[vec2]] : vector<4x8x2xf32>, vector<4x2x4xf32> into vector<8x4xf32>
 // CHECK:       vector.transfer_write %[[vec3]], %[[subview_1]][%c0, %c0] {in_bounds = [true, true]} : vector<8x4xf32>, memref<8x4xf32, strided<[4, 1], offset: ?>>
 // CHECK:     }
 
@@ -66,7 +66,7 @@ module {
 // CHECK:       %[[vec1:.*]] = vector.transfer_read %[[expand_shape]][%c0, %c0, %c0, %c0], %0 {in_bounds = [true, true, true, true]} : memref<4x8x1x2xbf16, strided<[16, 2, 2, 1], offset: ?>>, vector<4x8x1x2xbf16>
 // CHECK:       %[[vec2:.*]] = vector.transfer_read %1[%c0, %c0, %c0, %c0], %0 {in_bounds = [true, true, true, true]} : memref<4x1x4x2xbf16>, vector<4x1x4x2xbf16>
 // CHECK:       %[[vec3:.*]] = vector.transfer_read %[[subview]][%c0, %c0], %0 {in_bounds = [true, true]} : memref<8x4xbf16, strided<[4, 1], offset: ?>>, vector<8x4xbf16>
-// CHECK:       %[[vec4:.*]] = vector.contract {indexing_maps = [#map, #map1, #map2], iterator_types = ["reduction", "reduction", "parallel", "parallel", "reduction"], kind = #vector.kind<add>} %2, %3, %4 : vector<4x8x1x2xbf16>, vector<4x1x4x2xbf16> into vector<8x4xbf16>
+// CHECK:       %[[vec4:.*]] = vector.contract {indexing_maps = [#map, #map1, #map2], iterator_types = ["reduction", "reduction", "parallel", "parallel", "reduction"], kind = #vector.kind<add>} %[[vec1]], %[[vec2]], %[[vec3]] : vector<4x8x1x2xbf16>, vector<4x1x4x2xbf16> into vector<8x4xbf16>
 // CHECK:       vector.transfer_write %[[vec4]], %[[subview]][%c0, %c0] {in_bounds = [true, true]} : vector<8x4xbf16>, memref<8x4xbf16, strided<[4, 1], offset: ?>>
 
 // -----

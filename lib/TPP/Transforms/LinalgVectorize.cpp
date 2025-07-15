@@ -58,8 +58,8 @@ struct VectorizationPattern : public RewritePattern {
     if (failed(vectorizeResult))
             return failure();
 
-    auto result = *vectorizeResult;
-    rewriter.replaceOp(op, result.replacements);
+    rewriter.replaceOp(op, vectorizeResult->replacements);
+
     return success();
   }
 };

@@ -92,8 +92,8 @@ struct LinalgGenericToVector : OpRewritePattern<linalg::GenericOp> {
     if (failed(vectorizeResult))
 	    return failure();
 
-    auto result = *vectorizeResult;
-    rewriter.replaceOp(linalgOp, result.replacements);
+    rewriter.replaceOp(linalgOp, vectorizeResult->replacements);
+
     return success();
   }
 };
@@ -109,8 +109,8 @@ struct LinalgToVector : OpRewritePattern<LinalgOp> {
     if (failed(vectorizeResult))
             return failure();
 
-    auto result = *vectorizeResult;
-    rewriter.replaceOp(linalgOp, result.replacements);
+    rewriter.replaceOp(linalgOp, vectorizeResult->replacements);
+
     return success();
   }
 };
