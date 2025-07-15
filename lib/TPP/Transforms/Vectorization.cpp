@@ -87,7 +87,14 @@ struct LinalgGenericToVector : OpRewritePattern<linalg::GenericOp> {
             {map0, map1, linalgOp.getIndexingMapsArray()[2]}));
       }
     }
-    return linalg::vectorize(rewriter, linalgOp);
+         
+    auto vectorizeResult = linalg::vectorize(rewriter, linalgOp);
+    if (failed(vectorizeResult))
+	    return failure();
+
+    auto result = *vectorizeResult;
+    rewriter.replaceOp(linalgOp, result.replacements);
+    return success();
   }
 };
 
@@ -97,7 +104,14 @@ struct LinalgToVector : OpRewritePattern<LinalgOp> {
 
   LogicalResult matchAndRewrite(LinalgOp linalgOp,
                                 PatternRewriter &rewriter) const override {
-    return linalg::vectorize(rewriter, linalgOp);
+
+    auto vectorizeResult = linalg::vectorize(rewriter, linalgOp);
+    if (failed(vectorizeResult))
+            return failure();
+
+    auto result = *vectorizeResult;
+    rewriter.replaceOp(linalgOp, result.replacements);
+    return success();
   }
 };
 
