@@ -152,9 +152,9 @@ func.func @entry(%arg0: tensor<4x2xf32>, %arg1: tensor<4x2xi32>, %arg2: tensor<4
 // OPT-CONT: arith.constant dense<0> : tensor<4x8xi32>
 // OPT-CONT-NOT: arith.constant dense<1> : tensor<4x8xi32>
 // OPT-CONT-NOT: arith.constant dense<1> : tensor<4x8xi64>
-// OPT-CONT: arith.constant dense<{{\[}}{{\[}}0, 7, 15, 23, 31{{.*}}> : tensor<4x8xi32>
-// OPT-CONT: arith.constant dense<{{\[}}{{\[}}0, 7, 15, 23, 31{{.*}}> : tensor<4x8xi32>
-// OPT-CONT: arith.constant dense<{{\[}}{{\[}}0, 7, 15, 23, 31{{.*}}> : tensor<4x8xi64>
+// OPT-CONT: arith.constant dense<{{\[}}{{\[}}0, 3, 7, 11, 15{{.*}}> : tensor<4x8xi32>
+// OPT-CONT: arith.constant dense<{{\[}}{{\[}}0, 3, 7, 11, 15{{.*}}> : tensor<4x8xi32>
+// OPT-CONT: arith.constant dense<{{\[}}{{\[}}0, 3, 7, 11, 15{{.*}}> : tensor<4x8xi64>
 // OPT-CONT: arith.constant dense<{{\[}}{{\[}}0, 1], [2, 3]]> : tensor<2x2xi32>
 // OPT-CONT: arith.constant 1.000000e+00 : f32
 // OPT-CONT: arith.constant dense<{{.*}}0.000000e+00, 3.125000e-02, 6.250000e-02, {{.*}}> : tensor<4x8xf16>
@@ -169,9 +169,9 @@ func.func @entry(%arg0: tensor<4x2xf32>, %arg1: tensor<4x2xi32>, %arg2: tensor<4
 // OPT-RANDOM: arith.constant dense<0> : tensor<4x8xi32>
 // OPT-RANDOM-NOT: arith.constant dense<1> : tensor<4x8xi32>
 // OPT-RANDOM-NOT: arith.constant dense<1> : tensor<4x8xi64>
-// OPT-RANDOM: arith.constant dense<{{\[}}{{\[}}0, 45, 240, 105, 135{{.*}}> : tensor<4x8xi32>
-// OPT-RANDOM: arith.constant dense<{{\[}}{{\[}}72, 214, 137, 95, 208{{.*}}> : tensor<4x8xi32>
-// OPT-RANDOM: arith.constant dense<{{\[}}{{\[}}0, 45, 240, 105, 135{{.*}}> : tensor<4x8xi64>
+// OPT-RANDOM: arith.constant dense<{{\[}}{{\[}}0, 22, 120, 52, 67{{.*}}> : tensor<4x8xi32>
+// OPT-RANDOM: arith.constant dense<{{\[}}{{\[}}36, 107, 68, 47, 104{{.*}}> : tensor<4x8xi32>
+// OPT-RANDOM: arith.constant dense<{{\[}}{{\[}}0, 22, 120, 52, 67{{.*}}> : tensor<4x8xi64>
 // OPT-RANDOM: arith.constant dense<{{\[}}{{\[}}0, 1], [2, 3]]> : tensor<2x2xi32>
 // OPT-RANDOM: arith.constant 1.000000e+00 : f32
 // OPT-RANDOM: arith.constant dense<{{.*}}9.627340e-04, 1.791990e-01, 9.394530e-01, {{.*}}> : tensor<4x8xf16>

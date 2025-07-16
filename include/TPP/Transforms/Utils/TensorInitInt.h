@@ -100,18 +100,18 @@ struct ContinuousTensorInitInt : TensorInitInt {
   void fillData() override;
 
   // Upper bound for quantization.
-  int upperBound = 255;
+  int upperBound = 127;
 };
 
 // Random init (uniform).
 struct RandomTensorInitInt : TensorInitInt {
   RandomTensorInitInt(DataType type, int seed)
-      : TensorInitInt(type), generator(seed), distribution(0, 255) {}
+      : TensorInitInt(type), generator(seed), distribution(0, 127) {}
 
   // Next random uniform number.
   float next() { return distribution(generator); }
 
-  // Return a dense<uniform(0, 255)> throughout the shape.
+  // Return a dense<uniform(0, 127)> throughout the shape.
   void fillData() override;
 
 private:
@@ -132,7 +132,7 @@ struct NormalTensorInitInt : TensorInitInt {
     return value;
   }
 
-  // Return a dense<normal(0, 127)> throughout the shape. 
+  // Return a dense<normal(0, 127)> throughout the shape.
   void fillData() override;
 
 private:
