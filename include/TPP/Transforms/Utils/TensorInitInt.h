@@ -124,7 +124,7 @@ private:
 // Random init (normal).
 struct NormalTensorInitInt : TensorInitInt {
   NormalTensorInitInt(DataType type, int seed)
-      : TensorInitInt(type), generator(seed), distribution(255, 0.5) {}
+      : TensorInitInt(type), generator(seed), distribution(127) {}
 
   // Next random number.
   float next() {
@@ -132,7 +132,7 @@ struct NormalTensorInitInt : TensorInitInt {
     return value;
   }
 
-  // Return a dense<normal(0, 255)> throughout the shape.
+  // Return a dense<normal(0, 127)> throughout the shape.
   void fillData() override;
 
 private:
