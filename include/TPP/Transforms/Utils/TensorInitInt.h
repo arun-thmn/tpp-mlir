@@ -132,7 +132,7 @@ struct NormalTensorInitInt : TensorInitInt {
     return value;
   }
 
-  // Return a dense<normal(0, 127)> throughout the shape.
+  // Return a dense<normal(0, 127)> throughout the shape. 
   void fillData() override;
 
 private:
