@@ -59,8 +59,16 @@ static bool isTransposedMatrix(vector::ContractionOp contractOp,
   AffineMap mapA = contractMaps[0];
   AffineMap mapB = contractMaps[1];
 
+  bool isI8 = false;
+  auto intType = llvm::dyn_cast<mlir::IntegerType>(elementType);
+
+  if (intType) {
+    if (intType.isSignless() && intType.getWidth() == 8)
+      isI8 = true;
+  }
+
   bool isF32 = elementType.isF32();
-  bool isF16_BF16 = (elementType.isF16() || elementType.isBF16());
+  bool isF16_BF16_I8 = (elementType.isF16() || elementType.isBF16() || isI8);
 
   auto resultsMapA = mapA.getNumResults();
   auto resultsMapB = mapB.getNumResults();
@@ -70,7 +78,7 @@ static bool isTransposedMatrix(vector::ContractionOp contractOp,
            "Result dim map for A and B should be 3");
   }
 
-  if (isF16_BF16) {
+  if (isF16_BF16_I8) {
     assert(resultsMapA == 4 && resultsMapB == 4 &&
            "Result dim map for A and B should be 4");
   }
@@ -83,7 +91,7 @@ static bool isTransposedMatrix(vector::ContractionOp contractOp,
            "Input dim map for A and B should be 4");
   }
 
-  if (isF16_BF16) {
+  if (isF16_BF16_I8) {
     assert(inputsMapA == 5 && inputsMapB == 5 &&
            "Input dim map for A and B should be 5");
   }
@@ -95,7 +103,7 @@ static bool isTransposedMatrix(vector::ContractionOp contractOp,
     auto affineExpr =
         dyn_cast<AffineDimExpr>(mlir::getAffineDimExpr(i, mapA.getContext()));
 
-    if (isF16_BF16) {
+    if (isF16_BF16_I8) {
       auto vnniDim = dyn_cast<AffineDimExpr>(mapA.getResult(3));
       if (affineExpr != vnniDim && affineExpr != dimBR)
         listMxNxK.push_back(affineExpr);
@@ -128,8 +136,16 @@ static bool permutationCheck(vector::ContractionOp contractOp,
   AffineMap mapA = contractMaps[0];
   AffineMap mapB = contractMaps[1];
 
+  bool isI8 = false;
+  auto intType = llvm::dyn_cast<mlir::IntegerType>(elementType);
+
+  if (intType) {
+    if (intType.isSignless() && intType.getWidth() == 8)
+      isI8 = true;
+  }
+
   bool isF32 = elementType.isF32();
-  bool isF16_BF16 = (elementType.isF16() || elementType.isBF16());
+  bool isF16_BF16_I8 = (elementType.isF16() || elementType.isBF16() || isI8);
 
   auto inputsMapA = mapA.getNumInputs();
   SmallVector<AffineDimExpr> inputDims;
@@ -148,7 +164,7 @@ static bool permutationCheck(vector::ContractionOp contractOp,
     outputDimsA.push_back(affineExpr);
   }
 
-  if (isF16_BF16) {
+  if (isF16_BF16_I8) {
     // We match the pattern {Batch-reduction, vnni, M, N, K} or
     // {Batch-reduction, M, N, K, vnni} -> {Batch-reduction, M, K, vnni}
     auto c1 = inputDims[0] == outputDimsA[0];
@@ -178,7 +194,7 @@ static bool permutationCheck(vector::ContractionOp contractOp,
     outputDimsB.push_back(affineExpr);
   }
 
-  if (isF16_BF16) {
+  if (isF16_BF16_I8) {
     // We match the pattern {Batch-reduction, vnni, M, N, K} or
     // {Batch-reduction, M, N, K, vnni} -> {Batch-reduction, K, N, vnni}
     auto c4 = inputDims[0] == outputDimsB[0];
@@ -291,15 +307,23 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
     bool isF16 = elementType.isF16();
     bool isBF16 = elementType.isBF16();
 
-    if (!(isF32 || isF16 || isBF16))
-      return rewriter.notifyMatchFailure(contractOp,
-                                         "The type is not F32 or F16 or BF16");
+    bool isI8 = false;
+    auto intType = llvm::dyn_cast<mlir::IntegerType>(elementType);
+
+    if (intType) {
+      if (intType.isSignless() && intType.getWidth() == 8)
+        isI8 = true;
+    }
+
+    if (!(isF32 || isF16 || isBF16 || isI8))
+      return rewriter.notifyMatchFailure(
+          contractOp, "The type is not F32 or F16 or BF16 or I8");
 
     bool bf16dp = false;
     bool srf = false;
     bool fallback = false;
 
-    if (isBF16 || isF16) {
+    if (isBF16 || isF16 || isI8) {
       auto cpuName = vnni::utils::getTargetArchName();
       if (cpuName == "SRF")
         srf = true;
@@ -311,9 +335,9 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
         fallback = true;
     }
 
-    if (isF16 && !(srf))
+    if ((isF16 || isI8) && !(srf))
       return rewriter.notifyMatchFailure(
-          contractOp, "F16 type is supported only for SRF kind of machines");
+          contractOp, "F16/I8 type is supported only for SRF kind of machines");
 
     // Check the operation type MatMul, B-MatMul, or BR-MatMul
     SmallVector<vector::IteratorType> contractIteratorTypes =
@@ -328,7 +352,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
       return rewriter.notifyMatchFailure(
           contractOp, "Batch matmul operation not supported yet");
 
-    if (isBF16 || isF16) {
+    if (isBF16 || isF16 || isI8) {
       if (reductionCount == 2)
         return rewriter.notifyMatchFailure(
             contractOp, "Batch reduce matmul operation without vnni layout");
@@ -360,12 +384,12 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
     int64_t K = 0;
     int64_t vnni = 0;
 
-    if (isBF16 || isF16) {
+    if (isBF16 || isF16 || isI8) {
       M = lhsType.getDimSize(lhsType.getRank() - 3);
       N = rhsType.getDimSize(lhsType.getRank() - 2);
       K = lhsType.getDimSize(lhsType.getRank() - 2);
       vnni = lhsType.getDimSize(lhsType.getRank() - 1);
-      if (K != (vnni / 2))
+      if (K != (vnni / 2) && K != (vnni / 4))
         return rewriter.notifyMatchFailure(
             contractOp, "K tile size should be equal to VNNI layout");
 
@@ -376,9 +400,9 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
         return rewriter.notifyMatchFailure(
             contractOp, "N tile size divisible by 16 are only supported");
 
-      if (vnni != 2)
+      if (vnni != 2 && vnni != 4)
         return rewriter.notifyMatchFailure(
-            contractOp, "Only VNNI layout=2 is supported, now");
+            contractOp, "Only VNNI layout=2/4 is supported, now");
     }
 
     if (isF32) {
@@ -412,8 +436,8 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
     // matrix then broadcast A ony-by-one + FMA.
     // If N > M: perform opposite. Broadcast A matrix then load B one-by-
     // one + FMA.
-    // Following this kind of lowering, we reduce the register loads by 
-    // stacking the less B loads or less A broadcasts and do the larger B 
+    // Following this kind of lowering, we reduce the register loads by
+    // stacking the less B loads or less A broadcasts and do the larger B
     // loads or A broadcast in a LIFO manner. Finally, it helps in reducing
     // the probablity of register spills.
     bool mDriven = true;
@@ -491,7 +515,14 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
       }
     }
 
-    if (outsElementType.isF32()) {
+    bool isOutI32 = false;
+    auto outType = llvm::dyn_cast<mlir::IntegerType>(outsElementType);
+    if (outType) {
+      if (outType.isSignless() && outType.getWidth() == 32)
+        isOutI32 = true;
+    }
+
+    if (outsElementType.isF32() || isOutI32) {
       for (int j = 0; j < N; j = j + sizeFactor) {
         for (int i = 0; i < M; i++) {
           Value indexOp_A = rewriter.create<arith::ConstantIndexOp>(
@@ -562,11 +593,18 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
                 auto i1Mask_2 = rewriter.create<arith::ConstantOp>(
                     kForOp.getLoc(), VectorType::get(2, rewriter.getI1Type()),
                     boolAttr_2);
-                auto zeroAttr = rewriter.getFloatAttr(elementType, 0.0);
+                FloatAttr zeroAttr;
+                if (!isI8) {
+                  zeroAttr = rewriter.getFloatAttr(elementType, 0.0);
+                }
 
                 // Destination type
                 mlir::VectorType dstType =
                     mlir::VectorType::get(sizeFactor, rewriter.getF32Type());
+
+                if (isI8)
+                  dstType =
+                      mlir::VectorType::get(sizeFactor, rewriter.getI32Type());
 
                 llvm::SmallVector<OpFoldResult> strides = {
                     rewriter.getIndexAttr(1), rewriter.getIndexAttr(1),
@@ -664,7 +702,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
 
                 // bf16 type + avx512. uKernel lowering for machines like
                 // cpx (zen5) to target avx512bf16dp.
-                if (bf16dp && isBF16) {
+                if (bf16dp || isI8) {
 
                   if (mDriven) { // M -> N
                     // Load elements of B matrix and store in a DS
@@ -672,7 +710,8 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
                       Value indexOp_j = rewriter.create<arith::ConstantIndexOp>(
                           reductionForOp.getLoc(), j);
                       auto valueRow = rewriterNewKForOp.create<vector::LoadOp>(
-                          kForOp.getLoc(), VectorType::get(32, elementType),
+                          kForOp.getLoc(),
+                          VectorType::get({sizeFactor * vnni}, elementType),
                           rhsClone->getResult(0),
                           ValueRange{indexOp_c0, indexOp_c0, indexOp_j,
                                      indexOp_c0});
@@ -700,15 +739,27 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
                       auto valuef32 =
                           rewriterNewKForOp.create<vector::BitCastOp>(
                               kForOp.getLoc(),
-                              VectorType::get(32,
-                                              rewriterNewKForOp.getBF16Type()),
+                              VectorType::get({sizeFactor * vnni}, elementType),
                               bcst_i32);
-                      for (int j = 0; j < (N / sizeFactor); j++) {
-                        auto dp = rewriter.create<mlir::x86vector::DotBF16Op>(
-                            kForOp.getLoc(), dstType,
-                            iterArgsNewKForOp[i + (j * M)], valuef32,
-                            matf32[j]);
-                        oddFMAs.push_back(dp);
+
+                      if (isBF16) {
+                        for (int j = 0; j < (N / sizeFactor); j++) {
+                          auto dp = rewriter.create<mlir::x86vector::DotBF16Op>(
+                              kForOp.getLoc(), dstType,
+                              iterArgsNewKForOp[i + (j * M)], valuef32,
+                              matf32[j]);
+                          oddFMAs.push_back(dp);
+                        }
+                      }
+
+                      if (isI8) {
+                        for (int j = 0; j < (N / sizeFactor); j++) {
+                          auto dp = rewriter.create<mlir::x86vector::DotInt8Op>(
+                              kForOp.getLoc(), dstType,
+                              iterArgsNewKForOp[i + (j * M)], valuef32,
+                              matf32[j]);
+                          oddFMAs.push_back(dp);
+                        }
                       }
                     }
 
@@ -743,8 +794,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
                       auto valuef32 =
                           rewriterNewKForOp.create<vector::BitCastOp>(
                               kForOp.getLoc(),
-                              VectorType::get(32,
-                                              rewriterNewKForOp.getBF16Type()),
+                              VectorType::get({sizeFactor * vnni}, elementType),
                               bcst_i32);
                       matf32.push_back(valuef32);
                     }
@@ -753,16 +803,30 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
                       Value indexOp_j = rewriter.create<arith::ConstantIndexOp>(
                           reductionForOp.getLoc(), j);
                       auto valueRow = rewriterNewKForOp.create<vector::LoadOp>(
-                          kForOp.getLoc(), VectorType::get(32, elementType),
+                          kForOp.getLoc(),
+                          VectorType::get({sizeFactor * vnni}, elementType),
                           rhsClone->getResult(0),
                           ValueRange{indexOp_c0, indexOp_c0, indexOp_j,
                                      indexOp_c0});
-                      for (int i = 0; i < M; i++) {
-                        auto dp = rewriter.create<mlir::x86vector::DotBF16Op>(
-                            kForOp.getLoc(), dstType, iterArgsNewKForOp[k],
-                            matf32[i], valueRow);
-                        k++;
-                        evenFMAs.push_back(dp);
+
+                      if (isBF16) {
+                        for (int i = 0; i < M; i++) {
+                          auto dp = rewriter.create<mlir::x86vector::DotBF16Op>(
+                              kForOp.getLoc(), dstType, iterArgsNewKForOp[k],
+                              matf32[i], valueRow);
+                          k++;
+                          evenFMAs.push_back(dp);
+                        }
+                      }
+
+                      if (isI8) {
+                        for (int i = 0; i < M; i++) {
+                          auto dp = rewriter.create<mlir::x86vector::DotInt8Op>(
+                              kForOp.getLoc(), dstType, iterArgsNewKForOp[k],
+                              matf32[i], valueRow);
+                          k++;
+                          evenFMAs.push_back(dp);
+                        }
                       }
                     }
                   }
@@ -905,7 +969,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
                 // (b) bf16 fallback + avx2 instructions.
                 // TODO: update lowering based on M & N. Now it is
                 // default to M -> N
-                if (srf || (fallback && avx2 && !avx512)) {
+                if ((srf && !isI8) || (fallback && avx2 && !avx512)) {
                   // Load odd elements of A Matrix and store in a DS
                   for (int i = 0; i < M; i++) {
                     Value oddA;
@@ -1228,7 +1292,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
 
     // get the 2nd input source for addOp via vector transfer read
     // ps: the 1st one is C matrix
-    if (addOp && maxOp && !isF32) {
+    if (addOp && maxOp && !isF32 && !isI8) {
       vector::TransferReadOp readOp_add;
       if (auto vectBcst = addOp.getLhs().getDefiningOp<vector::BroadcastOp>()) {
         if (auto vectorRead =
@@ -1268,7 +1332,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
         auto acc_value = newReductionForOp.getResult(k);
         k++;
 
-        if (addOp && maxOp && !isF32) {
+        if (addOp && maxOp && !isF32 && !isI8) {
           Value add_row;
 
           if (global_readOp) {
@@ -1360,7 +1424,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
         }
 
         // We do arith.tuncf for f32 -> bf16 in SRF/ARL/SPR kind of machines
-        if ((srf || bf16dp) && !outsElementType.isF32()) {
+        if ((srf || bf16dp) && !outsElementType.isF32() && !isI8) {
           vec_final = rewriter.create<arith::TruncFOp>(
               reductionForOp.getLoc(), VectorType::get(sizeFactor, type),
               acc_value);
