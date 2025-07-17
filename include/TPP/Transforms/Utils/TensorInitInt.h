@@ -112,7 +112,7 @@ struct RandomTensorInitInt : TensorInitInt {
   RandomTensorInitInt(DataType type, int seed)
       : TensorInitInt(type), generator(seed), distribution(0, 255) {
     if (type == DataType::I8)
-      distribution = std::uniform_int_distribution<uint64_t>(127);
+      distribution = std::uniform_int_distribution<uint64_t>(0, 127);
   }
 
   // Next random uniform number.
