@@ -400,9 +400,13 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
         return rewriter.notifyMatchFailure(
             contractOp, "N tile size divisible by 16 are only supported");
 
-      if (vnni != 2 && vnni != 4)
+      if (vnni != 2 && isBF16)
         return rewriter.notifyMatchFailure(
-            contractOp, "Only VNNI layout=2/4 is supported, now");
+            contractOp, "Only VNNI layout=2 is supported for bf16, now");
+
+      if (vnni != 4 && isI8)
+        return rewriter.notifyMatchFailure(
+            contractOp, "Only VNNI layout=4 is supported for i8, now");
     }
 
     if (isF32) {
