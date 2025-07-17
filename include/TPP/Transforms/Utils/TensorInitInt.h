@@ -94,11 +94,11 @@ struct SimpleTensorInitInt : TensorInitInt {
 
 // Continuous init (quantized normalized affine range).
 struct ContinuousTensorInitInt : TensorInitInt {
-  ContinuousTensorInitInt(DataType type) : TensorInitInt(type),
-       upperBound(255){
-	       if (type == DataType::I8)
-		       upperBound = 127;
-       }
+  ContinuousTensorInitInt(DataType type)
+      : TensorInitInt(type), upperBound(255) {
+    if (type == DataType::I8)
+      upperBound = 127;
+  }
 
   // Return a dense<0 ... upperBound> throughout the shape.
   void fillData() override;
@@ -111,9 +111,9 @@ struct ContinuousTensorInitInt : TensorInitInt {
 struct RandomTensorInitInt : TensorInitInt {
   RandomTensorInitInt(DataType type, int seed)
       : TensorInitInt(type), generator(seed), distribution(0, 255) {
-      	if (type == DataType::I8)
-		distribution = std::uniform_int_distribution<uint64_t>(127);
-      }
+    if (type == DataType::I8)
+      distribution = std::uniform_int_distribution<uint64_t>(127);
+  }
 
   // Next random uniform number.
   float next() { return distribution(generator); }
@@ -131,10 +131,10 @@ private:
 // Random init (normal).
 struct NormalTensorInitInt : TensorInitInt {
   NormalTensorInitInt(DataType type, int seed)
-      : TensorInitInt(type), generator(seed), distribution(255) { 
-      	if (type == DataType::I8)
-		distribution = std::binomial_distribution<uint64_t>(127);
-      }
+      : TensorInitInt(type), generator(seed), distribution(255) {
+    if (type == DataType::I8)
+      distribution = std::binomial_distribution<uint64_t>(127);
+  }
 
   // Next random number.
   float next() {
