@@ -292,9 +292,10 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
     bool isBF16 = elementType.isBF16();
     bool isI8 = elementType.isSignlessInteger(8);
 
+    bool isPackedType = isF16 || isBF16 || isI8;
     int64_t vnniFactor = (isBF16 || isF16) ? 2 : isI8 ? 4 : 0;
 
-    if (!(isF32 || isF16 || isBF16 || isI8))
+    if (!(isF32 || isPackedType))
       return rewriter.notifyMatchFailure(
           contractOp, "The type is not F32 or F16 or BF16 or I8");
 
@@ -302,7 +303,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
     bool srf = false;
     bool fallback = false;
 
-    if (isBF16 || isF16 || isI8) {
+    if (isPackedType) {
       auto cpuName = vnni::utils::getTargetArchName();
       if (cpuName == "SRF")
         srf = true;
@@ -331,7 +332,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
       return rewriter.notifyMatchFailure(
           contractOp, "Batch matmul operation not supported yet");
 
-    if (isBF16 || isF16 || isI8) {
+    if (isPackedType) {
       if (reductionCount == 2)
         return rewriter.notifyMatchFailure(
             contractOp, "Batch reduce matmul operation without vnni layout");
@@ -363,15 +364,11 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
     int64_t K = 0;
     int64_t vnni = 0;
 
-    if (isBF16 || isF16 || isI8) {
+    if (isPackedType) {
       M = lhsType.getDimSize(lhsType.getRank() - 3);
       N = rhsType.getDimSize(lhsType.getRank() - 2);
       K = lhsType.getDimSize(lhsType.getRank() - 2);
       vnni = lhsType.getDimSize(lhsType.getRank() - 1);
-
-      if (K != vnniFactor)
-        return rewriter.notifyMatchFailure(
-            contractOp, "K tile size should be equal to VNNI layout");
 
       // TODO: We need the N tile size to be divisible by 16 for avx2
       // fallback case. So that it ensures, LLVM find a pattern and lowers to
@@ -387,6 +384,10 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
       if (vnni != 4 && isI8)
         return rewriter.notifyMatchFailure(
             contractOp, "Only VNNI layout=4 is supported for i8, now");
+
+      if (K != (vnni/vnniFactor))
+        return rewriter.notifyMatchFailure(
+            contractOp, "K tile size should be equal to VNNI layout");
     }
 
     if (isF32) {
