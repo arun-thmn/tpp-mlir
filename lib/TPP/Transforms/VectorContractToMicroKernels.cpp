@@ -292,6 +292,8 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
     bool isBF16 = elementType.isBF16();
     bool isI8 = elementType.isSignlessInteger(8);
 
+    int64_t vnniFactor = (isBF16 || isF16) ? 2 : isI8 ? 4 : 0;
+
     if (!(isF32 || isF16 || isBF16 || isI8))
       return rewriter.notifyMatchFailure(
           contractOp, "The type is not F32 or F16 or BF16 or I8");
@@ -366,7 +368,8 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
       N = rhsType.getDimSize(lhsType.getRank() - 2);
       K = lhsType.getDimSize(lhsType.getRank() - 2);
       vnni = lhsType.getDimSize(lhsType.getRank() - 1);
-      if (K != (vnni / 2) && K != (vnni / 4))
+
+      if (K != vnniFactor)
         return rewriter.notifyMatchFailure(
             contractOp, "K tile size should be equal to VNNI layout");
 

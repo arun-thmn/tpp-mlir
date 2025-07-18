@@ -1,3 +1,9 @@
+//===- check-vpdpbssd.cpp ----------------------------------------*- C++-*-===//
+//
+// Part of the TPP-MLIR Project, used to validate VPDPBSSD instruction on a
+// machine during lit unit tests.
+//===----------------------------------------------------------------------===//
+
 #include <immintrin.h>
 #include <signal.h>
 #include <setjmp.h>
@@ -11,10 +17,9 @@ void handle_sigill(int sig) {
 int main() {
     signal(SIGILL, handle_sigill);
     if (sigsetjmp(jump_buffer, 1)) {
-        return 1; // VPDPBSSD not supported (SIGILL triggered)
+        return 1; // VPDPBSSD not supported
     }
 
-    // Setup dummy vectors
     __m256i a = _mm256_set1_epi8(1);
     __m256i b = _mm256_set1_epi8(2);
     __m256i c = _mm256_setzero_si256();
