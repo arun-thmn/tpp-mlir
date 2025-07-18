@@ -60,7 +60,8 @@ static bool isTransposedMatrix(vector::ContractionOp contractOp,
   AffineMap mapB = contractMaps[1];
 
   bool isF32 = elementType.isF32();
-  bool isPackedType = (elementType.isF16() || elementType.isBF16() || elementType.isSignlessInteger(8));
+  bool isPackedType = (elementType.isF16() || elementType.isBF16() ||
+                       elementType.isSignlessInteger(8));
 
   auto resultsMapA = mapA.getNumResults();
   auto resultsMapB = mapB.getNumResults();
@@ -129,7 +130,8 @@ static bool permutationCheck(vector::ContractionOp contractOp,
   AffineMap mapB = contractMaps[1];
 
   bool isF32 = elementType.isF32();
-  bool isPackedType = (elementType.isF16() || elementType.isBF16() || elementType.isSignlessInteger(8));
+  bool isPackedType = (elementType.isF16() || elementType.isBF16() ||
+                       elementType.isSignlessInteger(8));
 
   auto inputsMapA = mapA.getNumInputs();
   SmallVector<AffineDimExpr> inputDims;
@@ -385,7 +387,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
         return rewriter.notifyMatchFailure(
             contractOp, "Only VNNI layout=4 is supported for i8, now");
 
-      if (K != (vnni/vnniFactor))
+      if (K != (vnni / vnniFactor))
         return rewriter.notifyMatchFailure(
             contractOp, "K tile size should be equal to VNNI layout");
     }
@@ -571,6 +573,9 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
                 auto i1Mask_2 = rewriter.create<arith::ConstantOp>(
                     kForOp.getLoc(), VectorType::get(2, rewriter.getI1Type()),
                     boolAttr_2);
+
+		// ZeroAttr is not needed for i8 type lowering on ARL machine,
+		// may be need in future for lowering on other machine.
                 FloatAttr zeroAttr;
                 if (!isI8) {
                   zeroAttr = rewriter.getFloatAttr(elementType, 0.0);
