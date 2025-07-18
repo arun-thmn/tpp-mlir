@@ -59,16 +59,8 @@ static bool isTransposedMatrix(vector::ContractionOp contractOp,
   AffineMap mapA = contractMaps[0];
   AffineMap mapB = contractMaps[1];
 
-  bool isI8 = false;
-  auto intType = llvm::dyn_cast<mlir::IntegerType>(elementType);
-
-  if (intType) {
-    if (intType.isSignless() && intType.getWidth() == 8)
-      isI8 = true;
-  }
-
   bool isF32 = elementType.isF32();
-  bool isF16_BF16_I8 = (elementType.isF16() || elementType.isBF16() || isI8);
+  bool isPackedType = (elementType.isF16() || elementType.isBF16() || elementType.isSignlessInteger(8));
 
   auto resultsMapA = mapA.getNumResults();
   auto resultsMapB = mapB.getNumResults();
@@ -78,7 +70,7 @@ static bool isTransposedMatrix(vector::ContractionOp contractOp,
            "Result dim map for A and B should be 3");
   }
 
-  if (isF16_BF16_I8) {
+  if (isPackedType) {
     assert(resultsMapA == 4 && resultsMapB == 4 &&
            "Result dim map for A and B should be 4");
   }
@@ -91,7 +83,7 @@ static bool isTransposedMatrix(vector::ContractionOp contractOp,
            "Input dim map for A and B should be 4");
   }
 
-  if (isF16_BF16_I8) {
+  if (isPackedType) {
     assert(inputsMapA == 5 && inputsMapB == 5 &&
            "Input dim map for A and B should be 5");
   }
@@ -103,7 +95,7 @@ static bool isTransposedMatrix(vector::ContractionOp contractOp,
     auto affineExpr =
         dyn_cast<AffineDimExpr>(mlir::getAffineDimExpr(i, mapA.getContext()));
 
-    if (isF16_BF16_I8) {
+    if (isPackedType) {
       auto vnniDim = dyn_cast<AffineDimExpr>(mapA.getResult(3));
       if (affineExpr != vnniDim && affineExpr != dimBR)
         listMxNxK.push_back(affineExpr);
@@ -136,16 +128,8 @@ static bool permutationCheck(vector::ContractionOp contractOp,
   AffineMap mapA = contractMaps[0];
   AffineMap mapB = contractMaps[1];
 
-  bool isI8 = false;
-  auto intType = llvm::dyn_cast<mlir::IntegerType>(elementType);
-
-  if (intType) {
-    if (intType.isSignless() && intType.getWidth() == 8)
-      isI8 = true;
-  }
-
   bool isF32 = elementType.isF32();
-  bool isF16_BF16_I8 = (elementType.isF16() || elementType.isBF16() || isI8);
+  bool isPackedType = (elementType.isF16() || elementType.isBF16() || elementType.isSignlessInteger(8));
 
   auto inputsMapA = mapA.getNumInputs();
   SmallVector<AffineDimExpr> inputDims;
@@ -164,7 +148,7 @@ static bool permutationCheck(vector::ContractionOp contractOp,
     outputDimsA.push_back(affineExpr);
   }
 
-  if (isF16_BF16_I8) {
+  if (isPackedType) {
     // We match the pattern {Batch-reduction, vnni, M, N, K} or
     // {Batch-reduction, M, N, K, vnni} -> {Batch-reduction, M, K, vnni}
     auto c1 = inputDims[0] == outputDimsA[0];
@@ -194,7 +178,7 @@ static bool permutationCheck(vector::ContractionOp contractOp,
     outputDimsB.push_back(affineExpr);
   }
 
-  if (isF16_BF16_I8) {
+  if (isPackedType) {
     // We match the pattern {Batch-reduction, vnni, M, N, K} or
     // {Batch-reduction, M, N, K, vnni} -> {Batch-reduction, K, N, vnni}
     auto c4 = inputDims[0] == outputDimsB[0];
@@ -306,14 +290,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
     bool isF32 = elementType.isF32();
     bool isF16 = elementType.isF16();
     bool isBF16 = elementType.isBF16();
-
-    bool isI8 = false;
-    auto intType = llvm::dyn_cast<mlir::IntegerType>(elementType);
-
-    if (intType) {
-      if (intType.isSignless() && intType.getWidth() == 8)
-        isI8 = true;
-    }
+    bool isI8 = elementType.isSignlessInteger(8);
 
     if (!(isF32 || isF16 || isBF16 || isI8))
       return rewriter.notifyMatchFailure(
@@ -519,14 +496,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
       }
     }
 
-    bool isOutI32 = false;
-    auto outType = llvm::dyn_cast<mlir::IntegerType>(outsElementType);
-    if (outType) {
-      if (outType.isSignless() && outType.getWidth() == 32)
-        isOutI32 = true;
-    }
-
-    if (outsElementType.isF32() || isOutI32) {
+    if (outsElementType.isF32() || outsElementType.isSignlessInteger(32)) {
       for (int j = 0; j < N; j = j + sizeFactor) {
         for (int i = 0; i < M; i++) {
           Value indexOp_A = rewriter.create<arith::ConstantIndexOp>(
