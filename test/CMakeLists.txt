@@ -18,7 +18,7 @@ set(TPP_OPT_TEST_DEPENDS
 
 add_lit_testsuite(check-tpp "Running the regression tests"
         ${CMAKE_CURRENT_BINARY_DIR}
-        DEPENDS ${TPP_OPT_TEST_DEPENDS}
+        DEPENDS ${TPP_OPT_TEST_DEPENDS} check-vpdpbssd
         )
 set_target_properties(check-tpp PROPERTIES FOLDER "Tests")
 
