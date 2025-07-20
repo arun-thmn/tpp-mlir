@@ -1,5 +1,3 @@
-# tools/CMakeLists.txt
-
 set(CHECKER_SRC ${CMAKE_CURRENT_SOURCE_DIR}/check-vpdpbssd.c)
 
 add_executable(check-vpdpbssd ${CHECKER_SRC})
