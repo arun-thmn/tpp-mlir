@@ -1,11 +1,7 @@
 set(CHECKER_SRC ${CMAKE_CURRENT_SOURCE_DIR}/check-vpdpbssd.cpp)
 
 add_executable(check-vpdpbssd ${CHECKER_SRC})
-if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        target_compile_options(check-vpdpbssd PRIVATE -mavxvnni -O2)
-elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-        target_compile_options(check-vpdpbssd PRIVATE -mavx2 -mavx512vnni -mavxvnni -O2)
-endif()
+target_compile_options(check-vpdpbssd PRIVATE -mavxvnni -O2)
 
 # Optional: ensure it outputs to a known build dir
 set_target_properties(check-vpdpbssd PROPERTIES
