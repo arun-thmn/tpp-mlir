@@ -1,4 +1,6 @@
 #include <stdio.h>
+
+#if defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
 
 int main() {
@@ -13,4 +15,8 @@ int main() {
 
     return 0;
 }
-
+#else
+int main() { // arm architecture
+    return 0;
+}
+#endif
