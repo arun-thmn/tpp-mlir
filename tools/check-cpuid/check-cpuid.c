@@ -1,18 +1,16 @@
-#include <cpuid.h>
-#include <string.h>
 #include <stdio.h>
+#include <cpuid.h>
 
 int main() {
     unsigned int eax, ebx, ecx, edx;
-    __get_cpuid(1, &eax, &ebx, &ecx, &edx);
-    unsigned int model = ((eax >> 4) & 0xF) | ((eax >> 12) & 0xF0);
 
-    char eax_str[9];
-    sprintf(eax_str, "%08x", eax);
-
-    if (strcmp(eax_str,"000c0662") == 0 && model == 198) {
-        return 1;
+    // Calling CPUID with EAX=7, ECX=1
+    if (__get_cpuid_count(7, 1, &eax, &ebx, &ecx, &edx)) {
+        if (edx & (1 << 4)) {
+            return 1;
+        }
     }
 
     return 0;
 }
+
