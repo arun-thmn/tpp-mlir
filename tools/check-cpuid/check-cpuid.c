@@ -16,7 +16,7 @@ int main() {
     return 0;
 }
 #else
-int main() { // arm architecture
+int main() { // skip arm architecture
     return 0;
 }
 #endif
