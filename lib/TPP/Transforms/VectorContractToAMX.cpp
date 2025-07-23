@@ -518,7 +518,7 @@ struct VectorContractToAMXPattern
     // M and N must be divisible by 16.
     if (M % 16 != 0 || N % 16 != 0)
       return rewriter.notifyMatchFailure(
-          op, "Output matrix dimensions must be equal and divisible by 16");
+          op, "Output matrix dimensions must be divisible by 16");
 
     auto accSubview = accDefiningOp.getBase();
     Location loc = op.getLoc();
