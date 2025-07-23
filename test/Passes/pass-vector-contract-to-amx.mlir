@@ -204,6 +204,41 @@ func.func @entry(%arg0: memref<8x32x32x32xbf16>, %arg1: memref<2x32x16x32x2xbf16
 
 // -----
 
+func.func @optimal_register_blocking_3x1(%arg0: memref<1x48x16x2xbf16>, %arg1: memref<1x16x16x2xbf16>, %arg2: memref<48x16xf32>) -> memref<48x16xf32> {
+  %0 = ub.poison : f32
+  %1 = ub.poison : bf16
+  %c0 = arith.constant 0 : index
+  %c48 = arith.constant 48 : index
+  %c16 = arith.constant 16 : index
+  %c1 = arith.constant 1 : index
+  scf.for %arg3 = %c0 to %c48 step %c48 {
+    scf.for %arg4 = %c0 to %c16 step %c16 {
+      %subview = memref.subview %arg2[%arg3, %arg4] [48, 16] [1, 1] : memref<48x16xf32> to memref<48x16xf32, strided<[16, 1], offset: ?>>
+      %2 = vector.transfer_read %subview[%c0, %c0], %0 {in_bounds = [true, true]} : memref<48x16xf32, strided<[16, 1], offset: ?>>, vector<48x16xf32>
+      %3 = scf.for %arg5 = %c0 to %c1 step %c1 iter_args(%arg6 = %2) -> (vector<48x16xf32>) {
+        %4 = scf.for %arg7 = %c0 to %c16 step %c16 iter_args(%arg8 = %arg6) -> (vector<48x16xf32>) {
+          %subview_0 = memref.subview %arg0[%arg5, %arg3, %arg7, 0] [1, 48, 16, 2] [1, 1, 1, 1] : memref<1x48x16x2xbf16> to memref<1x48x16x2xbf16, strided<[1536, 32, 2, 1], offset: ?>>
+          %subview_1 = memref.subview %arg1[%arg5, %arg7, %arg4, 0] [1, 16, 16, 2] [1, 1, 1, 1] : memref<1x16x16x2xbf16> to memref<1x16x16x2xbf16, strided<[512, 32, 2, 1], offset: ?>>
+          %5 = vector.transfer_read %subview_0[%c0, %c0, %c0, %c0], %1 {in_bounds = [true, true, true, true]} : memref<1x48x16x2xbf16, strided<[1536, 32, 2, 1], offset: ?>>, vector<1x48x16x2xbf16>
+          %6 = vector.transfer_read %subview_1[%c0, %c0, %c0, %c0], %1 {in_bounds = [true, true, true, true]} : memref<1x16x16x2xbf16, strided<[512, 32, 2, 1], offset: ?>>, vector<1x16x16x2xbf16>
+          %7 = vector.contract {indexing_maps = [affine_map<(d0, d1, d2, d3, d4) -> (d0, d2, d4, d1)>, affine_map<(d0, d1, d2, d3, d4) -> (d0, d4, d3, d1)>, affine_map<(d0, d1, d2, d3, d4) -> (d2, d3)>], iterator_types = ["reduction", "reduction", "parallel", "parallel", "reduction"], kind = #vector.kind<add>} %5, %6, %arg8 : vector<1x48x16x2xbf16>, vector<1x16x16x2xbf16> into vector<48x16xf32>
+          scf.yield %7 : vector<48x16xf32>
+        }
+        scf.yield %4 : vector<48x16xf32>
+      }
+      vector.transfer_write %3, %subview[%c0, %c0] {in_bounds = [true, true]} : vector<48x16xf32>, memref<48x16xf32, strided<[16, 1], offset: ?>>
+    }
+  }
+  return %arg2 : memref<48x16xf32>
+}
+
+// CHECK-LABEL:   func.func @optimal_register_blocking_3x1
+// CHECK-COUNT-3:     amx.tile_load
+// CHECK-COUNT-3:     amx.tile_mulf
+// CHECK-COUNT-3:     amx.tile_store
+
+// -----
+
 // This tests shows the lowering of a mixed precision vector.contract
 // (i8 x i8 -> i32) to AMX dialect.
 func.func @entry(%arg0: memref<4x16x64x64xi8>, %arg1: memref<16x16x16x64x4xi8>, %arg2: memref<4x16x64x64xi32>) {
