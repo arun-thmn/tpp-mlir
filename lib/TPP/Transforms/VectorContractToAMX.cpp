@@ -388,7 +388,7 @@ static SmallVector<Value> createTileMuls(OpBuilder &builder, Location loc,
   SmallVector<Value> results;
   int numIterArgs = 0;
   for (unsigned i = 0; i < aLoadTiles.size(); i++) {
-    for (unsigned j = 0; j < aLoadTiles.size(); j++) {
+    for (unsigned j = 0; j < bLoadTiles.size(); j++) {
       auto amx =
           resType.getElementType().isFloat()
               ? builder.create<amx::TileMulFOp>(loc, resType, aLoadTiles[i],
@@ -515,8 +515,8 @@ struct VectorContractToAMXPattern
     auto accType = cast<ShapedType>(accDefiningOp.getType());
     int64_t M = accType.getDimSize(0);
     int64_t N = accType.getDimSize(1);
-    // M and N must be equal and divisible by 16.
-    if (M != N || M % 16 != 0 || N % 16 != 0)
+    // M and N must be divisible by 16.
+    if (M % 16 != 0 || N % 16 != 0)
       return rewriter.notifyMatchFailure(
           op, "Output matrix dimensions must be equal and divisible by 16");
 
