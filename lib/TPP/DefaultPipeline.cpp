@@ -67,6 +67,9 @@ llvm::cl::opt<bool> lowerPackUnpackWithoutTranspose(
     llvm::cl::desc("Lower packs and unpacks reverting any dim permutations"),
     llvm::cl::init(false));
 
+llvm::cl::opt<bool> disableVnniPacking("disable-vnni-packing",
+                                   llvm::cl::desc("Disables VNNI packing for packed types"),
+                                   llvm::cl::init(false));
 
 llvm::cl::list<unsigned>
     registerBlocking("registerBlocking", llvm::cl::desc("Register blocking tile sizes for brgemm operation"),
@@ -156,6 +159,7 @@ private:
       tppDefaultOptions.linalgToVector = linalgToVector;
       tppDefaultOptions.vectorToXSMM = vectorToXSMM;
       tppDefaultOptions.lowerPackUnpackWithoutTranspose = lowerPackUnpackWithoutTranspose;
+      tppDefaultOptions.disableVnniPacking = disableVnniPacking;
       tppDefaultOptions.registerBlocking =
           SmallVector<unsigned>{registerBlocking.begin(), registerBlocking.end()};
       tppDefaultOptions.vectorToKernel = vectorToKernel;

@@ -52,6 +52,9 @@ def DefaultTppPasses : Pass<"default-tpp-passes", "ModuleOp"> {
     Option<"lowerPackUnpackWithoutTranspose", "lower-pack-unpack-without-transpose",
            "bool", /*default=*/"false",
            "Lower non-constant packs and unpacks reverting any dim permutations.">,
+    Option<"disableVnniPacking", "disable-vnni-packing",
+           "bool", /*default=*/"false",
+           "Disables VNNI packing for packed types.">,
     ListOption<"registerBlocking", "registerBlocking",
            "unsigned", "Register blocking tile sizes for brgemm operation.">,
 
@@ -71,7 +74,10 @@ def TppMapping : Pass<"tpp-mapping", "ModuleOp"> {
   let options= [
     Option<"lowerPackUnpackWithoutTranspose", "lower-pack-unpack-without-transpose",
            "bool", /*default=*/"false",
-           "Lower non-constant packs and unpacks reverting any dim permutations.">
+           "Lower non-constant packs and unpacks reverting any dim permutations.">,
+    Option<"disableVnniPacking", "disable-vnni-packing",
+           "bool", /*default=*/"false",
+           "Disables VNNI packing for packed types.">
   ];
 }
 
