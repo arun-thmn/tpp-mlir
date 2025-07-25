@@ -599,6 +599,8 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
       }
     }
 
+    // For splat layout we init the iter args with zero vector for the
+    // equivalent number of C loads.
     if (isSplat) {
       for (int j = 0; j < N; j = j + sizeFactor) {
         for (int i = 0; i < M; i++) {
@@ -1333,8 +1335,10 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
                       Value indexOp_j = rewriter.create<arith::ConstantIndexOp>(
                           reductionForOp.getLoc(), j);
 
+		      // B Matrix load.
+		      // For case where `B` is one vector<32xbf16>, we do interleaving
+		      // with two vector<16xbf16>
                       if ((N - j) <= 16) {
-
                         auto valueRow1 =
                             rewriterNewKForOp.create<vector::LoadOp>(
                                 kForOp.getLoc(),
@@ -1355,8 +1359,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
 
                         matf32.push_back(shuffle[0]);
 
-                      } else {
-
+                      } else { // For two vector<32xbf16>, we do two shuffle.
                         auto valueRow1 =
                             rewriterNewKForOp.create<vector::LoadOp>(
                                 kForOp.getLoc(),
@@ -1379,7 +1382,8 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
                         matf32.push_back(shuffle[1]);
                       }
                     }
-                    // Load elements of A matrix, do FMA, and store in a DS
+
+                    // Load elements of A matrix, do dp, and store in a DS
                     for (int i = 0, k = 0; i < M; i++) {
                       Value indexOp_i = rewriter.create<arith::ConstantIndexOp>(
                           reductionForOp.getLoc(), i);
@@ -1402,6 +1406,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
                     }
 
                   } else { // N -> M
+	            // Load A matrix
                     for (int i = 0; i < M; i++) {
                       Value indexOp_i = rewriter.create<arith::ConstantIndexOp>(
                           reductionForOp.getLoc(), i);
@@ -1415,6 +1420,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
                       matf32.push_back(valuef32);
                     }
 
+		    // Load B Matrix
                     for (int j = 0; j < N; j = j + (sizeFactor * 2)) {
                       Value indexOp_j = rewriter.create<arith::ConstantIndexOp>(
                           reductionForOp.getLoc(), j);
@@ -1486,7 +1492,8 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
                         }
                       }
                     }
-
+		    
+		    // Re-arrange the stored DPs in order of M -> N
                     for (int i = 0; i < M; i++) {
                       for (int j = 0; j < (N / sizeFactor); j++) {
                         evenFMAs.push_back(oddFMAs[i + (j * M)]);
@@ -1505,7 +1512,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
     SmallVector<Value> FMAs = newReductionForOp.getResults();
 
     // On splat layout, we shuffle the acc and add the C 
-    // matric value.
+    // matriX value.
     if (isSplat) {
       SmallVector<Value> splatFMAs;
 
@@ -1518,7 +1525,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
           Value indexOp_B2 = rewriter.create<arith::ConstantIndexOp>(
               reductionForOp.getLoc(), j + sizeFactor);
 
-          if ((N - j) <= 16) {
+          if ((N - j) <= 16) { // Case: one vector<32xbf16>
             Value valueCRow1 = rewriter.create<vector::LoadOp>(
                 reductionForOp.getLoc(),
                 VectorType::get(sizeFactor, outsElementType), subviewOpAcc,
@@ -1535,16 +1542,15 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
             splatFMAs.push_back(addOp);
             k++;
 
-          } else {
-
+          } else { // Case: two vector<32xbf16>
             auto shuffle1 = rewriter.create<vector::ShuffleOp>(
-                kForOp.getLoc(), VectorType::get({16}, rewriter.getF32Type()),
+                kForOp.getLoc(), VectorType::get({sizeFactor}, rewriter.getF32Type()),
                 FMAs[k], FMAs[k + 1],
                 ArrayRef<int64_t>{0, 1, 2, 3, 16, 17, 18, 19, 4, 5, 6, 7, 20,
                                   21, 22, 23});
 
             auto shuffle2 = rewriter.create<vector::ShuffleOp>(
-                kForOp.getLoc(), VectorType::get({16}, rewriter.getF32Type()),
+                kForOp.getLoc(), VectorType::get({sizeFactor}, rewriter.getF32Type()),
                 FMAs[k], FMAs[k + 1],
                 ArrayRef<int64_t>{8, 9, 10, 11, 24, 25, 26, 27, 12, 13, 14, 15,
                                   28, 29, 30, 31});
@@ -1583,7 +1589,9 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
           }
         }
       }
+
       FMAs.clear();
+      // Re-arrange the stored FMAs in order of M -> N.
       for (int j = 0; j < (N / sizeFactor); j++) {
         for (int i = 0; i < M; i++) {
           FMAs.push_back(splatFMAs[j + (i * (N / sizeFactor))]);
