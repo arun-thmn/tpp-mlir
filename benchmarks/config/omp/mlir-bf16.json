@@ -130,28 +130,28 @@
       "benchmark": [ "mlir-gen", "--kernel=const --float-type=bf16 --batch=256 --layers=1024,1024,1024,1024 --tiles=32,32,32 --vnni=0" ],
       "environment": { "OMP_NUM_THREADS": "2", "KMP_AFFINITY": "granularity=fine,verbose,compact,1,0" },
       "flags": [ "-n", "100", "-run-args='--disable-vnni-packing --def-parallel --parallel-task-grid=8,16 --vector-to-kernels --registerBlocking=8,32,2'" ],
-      "extensions": [ "(avx512.*)" ]
+      "extensions": [ "avx512_bf16" ]
     },
     "bf16_dp2_3x1024_omp_4_mlir": {
       "type": "IR-GEN",
       "benchmark": [ "mlir-gen", "--kernel=const --float-type=bf16 --batch=256 --layers=1024,1024,1024,1024 --tiles=32,32,32 --vnni=0" ],
       "environment": { "OMP_NUM_THREADS": "4", "KMP_AFFINITY": "granularity=fine,verbose,compact,1,0" },
       "flags": [ "-n", "100", "-run-args='--disable-vnni-packing --def-parallel --parallel-task-grid=8,8 --vector-to-kernels --registerBlocking=8,32,2'" ],
-      "extensions": [ "(avx512.*)" ]
+      "extensions": [ "avx512_bf16" ]
     },
     "bf16_dp2_3x1024_omp_8_mlir": {
       "type": "IR-GEN",
       "benchmark": [ "mlir-gen", "--kernel=const --float-type=bf16 --batch=256 --layers=1024,1024,1024,1024 --tiles=32,32,32 --vnni=0" ],
       "environment": { "OMP_NUM_THREADS": "8", "KMP_AFFINITY": "granularity=fine,verbose,compact,1,0" },
       "flags": [ "-n", "100", "-run-args='--disable-vnni-packing --def-parallel --parallel-task-grid=4,8 --vector-to-kernels --registerBlocking=8,32,2'" ],
-      "extensions": [ "(avx512.*)" ]
+      "extensions": [ "avx512_bf16" ]
     },
     "bf16_dp2_3x1024_omp_16_mlir": {
       "type": "IR-GEN",
       "benchmark": [ "mlir-gen", "--kernel=const --float-type=bf16 --batch=256 --layers=1024,1024,1024,1024 --tiles=32,32,32 --vnni=0" ],
       "environment": { "OMP_NUM_THREADS": "16", "KMP_AFFINITY": "granularity=fine,verbose,compact,1,0" },
       "flags": [ "-n", "100", "-run-args='--disable-vnni-packing --def-parallel --parallel-task-grid=2,8 --vector-to-kernels --registerBlocking=8,32,2'" ],
-      "extensions": [ "(avx512.*)" ]
+      "extensions": [ "avx512_bf16" ]
     }
   }},
   {
@@ -285,28 +285,28 @@
       "benchmark": [ "mlir-gen", "--kernel=const --bias --relu --float-type=bf16 --batch=256 --layers=1024,1024,1024,1024 --tiles=32,32,32 --vnni=0" ],
       "environment": { "OMP_NUM_THREADS": "2", "KMP_AFFINITY": "granularity=fine,verbose,compact,1,0" },
       "flags": [ "-n", "100", "-run-args='--disable-vnni-packing --def-parallel --parallel-task-grid=8,16 --vector-to-kernels --registerBlocking=8,32,2'" ],
-      "extensions": [ "(avx512.*)" ]
+      "extensions": [ "avx512_bf16" ]
     },
     "bf16_dp2_3x1024_omp_4_mlir": {
       "type": "IR-GEN",
       "benchmark": [ "mlir-gen", "--kernel=const --bias --relu --float-type=bf16 --batch=256 --layers=1024,1024,1024,1024 --tiles=32,32,32 --vnni=0" ],
       "environment": { "OMP_NUM_THREADS": "4", "KMP_AFFINITY": "granularity=fine,verbose,compact,1,0" },
       "flags": [ "-n", "100", "-run-args='--disable-vnni-packing --def-parallel --parallel-task-grid=8,8 --vector-to-kernels --registerBlocking=8,32,2'" ],
-      "extensions": [ "(avx512.*)" ]
+      "extensions": [ "avx512_bf16" ]
     },
     "bf16_dp2_3x1024_omp_8_mlir": {
       "type": "IR-GEN",
       "benchmark": [ "mlir-gen", "--kernel=const --bias --relu --float-type=bf16 --batch=256 --layers=1024,1024,1024,1024 --tiles=32,32,32 --vnni=0" ],
       "environment": { "OMP_NUM_THREADS": "8", "KMP_AFFINITY": "granularity=fine,verbose,compact,1,0" },
       "flags": [ "-n", "100", "-run-args='--disable-vnni-packing --def-parallel --parallel-task-grid=4,8 --vector-to-kernels --registerBlocking=8,32,2'" ],
-      "extensions": [ "(avx512.*)" ]
+      "extensions": [ "avx512_bf16" ]
     },
     "bf16_dp2_3x1024_omp_16_mlir": {
       "type": "IR-GEN",
       "benchmark": [ "mlir-gen", "--kernel=const --bias --relu --float-type=bf16 --batch=256 --layers=1024,1024,1024,1024 --tiles=32,32,32 --vnni=0" ],
       "environment": { "OMP_NUM_THREADS": "16", "KMP_AFFINITY": "granularity=fine,verbose,compact,1,0" },
       "flags": [ "-n", "100", "-run-args='--disable-vnni-packing --def-parallel --parallel-task-grid=2,8 --vector-to-kernels --registerBlocking=8,32,2'" ],
-      "extensions": [ "(avx512.*)" ]
+      "extensions": [ "avx512_bf16" ]
     }
   }},
   {

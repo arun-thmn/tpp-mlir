@@ -90,7 +90,7 @@
       "benchmark": [ "mlir-gen", "--kernel=const --float-type=bf16 --batch=256 --layers=1024,1024,1024,1024 --tiles=32,32,32 --vnni=0" ],
       "environment": {},
       "flags": [ "-n", "100", "-run-args='--disable-vnni-packing --vector-to-kernels --registerBlocking=8,32,2'" ],
-      "extensions": [ "avx512.*" ]
+      "extensions": [ "avx512_bf16" ]
     },
     "gemm_bf16_dp4_mlir": {
       "type": "IR-GEN",
@@ -160,7 +160,7 @@
       "benchmark": [ "mlir-gen", "--kernel=const --bias --relu --float-type=bf16 --batch=256 --layers=1024,1024,1024,1024 --tiles=32,32,32 --vnni=0" ],
       "environment": {},
       "flags": [ "-n", "100", "-run-args='--disable-vnni-packing --vector-to-kernels --registerBlocking=8,32,2'" ],
-      "extensions": [ "avx512.*" ]
+      "extensions": [ "avx512_bf16" ]
     },
     "mlp_bf16_dp4_mlir": {
       "type": "IR-GEN",
