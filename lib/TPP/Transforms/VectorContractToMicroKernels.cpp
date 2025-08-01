@@ -1400,7 +1400,6 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
                             kForOp.getLoc(), matf32[i], shuffle,
                             iterArgsNewKForOp[(j / sizeFactor) +
                                               (i * (N / sizeFactor))]);
-                        // k++;
                         oddFMAs.push_back(fmaOdd);
                       }
 
@@ -1423,7 +1422,6 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
                           kForOp.getLoc(), matf32[i], evenB,
                           iterArgsNewKForOp[(j / sizeFactor) +
                                             (i * (N / sizeFactor))]);
-                      // k++;
                       oddFMAs.push_back(fmaOdd);
                     }
 
@@ -1441,7 +1439,6 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
                           kForOp.getLoc(), matf32[i], oddB,
                           iterArgsNewKForOp[((j + sizeFactor) / sizeFactor) +
                                             (i * (N / sizeFactor))]);
-                      // k++;
                       oddFMAs.push_back(fmaOdd);
                     }
                   }
