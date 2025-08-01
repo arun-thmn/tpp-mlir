@@ -124,7 +124,7 @@
     }
   }},
   {
-  "gemm_fp32_mlir_vector_kernel_32_avx2": {
+  "gemm_fp32_mlir_vector_kernel_32_avx2_adl": {
     "fp32_3x1024_omp_2_mlir": {
       "type": "IR-GEN",
       "benchmark": [ "mlir-gen", "--kernel=const --float-type=f32 --batch=512 --layers=1024,1024,1024,1024 --tiles=32,32,32" ],
@@ -155,7 +155,7 @@
     }
   }},
   {
-  "mlp_fp32_mlir_vector_kernel_32_avx2": {
+  "mlp_fp32_mlir_vector_kernel_32_avx2_adl": {
     "fp32_3x1024_omp_2_mlir": {
       "type": "IR-GEN",
       "benchmark": [ "mlir-gen", "--kernel=const --bias --relu --float-type=f32 --batch=512 --layers=1024,1024,1024,1024 --tiles=32,32,32" ],
