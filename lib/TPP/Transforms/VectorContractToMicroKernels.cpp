@@ -1334,7 +1334,6 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
                 }
 
                 if (isSplat && srf) {
-
                   llvm::SmallVector<OpFoldResult> strides_splat = {
                       rewriter.getIndexAttr(1), rewriter.getIndexAttr(1),
                       rewriter.getIndexAttr(1)};
@@ -1342,111 +1341,202 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
                       rewriter.getIndexAttr(1), rewriter.getIndexAttr(1),
                       rewriter.getIndexAttr(1)};
 
-                  for (int i = 0; i < M; i++) {
-                    Value oddA;
+                  if (mDriven) { // M -> N
+                    // Load B-Matrix even+odd store to a DS
+                    for (int j = 0; j < N; j = j + (sizeFactor * 2)) {
+                      SmallVector<OpFoldResult> offsets = {
+                          rewriter.getIndexAttr(0),
+                          rewriter.getIndexAttr(0),
+                          rewriter.getIndexAttr(j),
+                      };
 
-                    SmallVector<OpFoldResult> offsets = {
-                        rewriter.getIndexAttr(0),
-                        rewriter.getIndexAttr(i),
-                        rewriter.getIndexAttr(0),
-                    };
-                    auto subview = rewriter.create<memref::SubViewOp>(
-                        kForOp.getLoc(), lhsClone->getResult(0), offsets,
-                        sizes_splat, strides_splat);
-                    oddA = rewriter.create<mlir::x86vector::BcstToPackedF32Op>(
-                        kForOp.getLoc(), dstType, subview);
+                      // For case B-matrix with one vector<8xbf16>, we do xmm
+                      // load of even + odd elements followed by a shuffle
+                      if ((N - j) <= 8) {
+                        llvm::SmallVector<OpFoldResult> sizes = {
+                            rewriter.getIndexAttr(1), rewriter.getIndexAttr(1),
+                            rewriter.getIndexAttr(8)};
 
-                    matf32.push_back(oddA);
-                  }
+                        auto subview = rewriter.create<memref::SubViewOp>(
+                            kForOp.getLoc(), rhsClone->getResult(0), offsets,
+                            sizes, strides_splat);
 
-                  // Load odd elements of B-Matrix, perform fma (odd), and store
-                  // to a DS
-                  for (int j = 0; j < N; j = j + (sizeFactor * 2)) {
+                        mlir::VectorType dstType = mlir::VectorType::get(
+                            {sizeFactor / 2}, rewriter.getF32Type());
 
-                    SmallVector<OpFoldResult> offsets = {
-                        rewriter.getIndexAttr(0),
-                        rewriter.getIndexAttr(0),
-                        rewriter.getIndexAttr(j),
-                    };
+                        auto evenB = rewriter.create<
+                            mlir::x86vector::CvtPackedEvenIndexedToF32Op>(
+                            kForOp.getLoc(), dstType, subview);
 
-                    if ((N - j) <= 8) {
+                        auto oddB = rewriter.create<
+                            mlir::x86vector::CvtPackedOddIndexedToF32Op>(
+                            kForOp.getLoc(), dstType, subview);
+
+                        auto shuffle = rewriter.create<vector::ShuffleOp>(
+                            kForOp.getLoc(),
+                            VectorType::get({sizeFactor},
+                                            rewriter.getF32Type()),
+                            evenB, oddB,
+                            ArrayRef<int64_t>{0, 4, 1, 5, 2, 6, 3, 7});
+
+                        matf32.push_back(shuffle);
+                        continue;
+                      }
+
                       llvm::SmallVector<OpFoldResult> sizes = {
                           rewriter.getIndexAttr(1), rewriter.getIndexAttr(1),
-                          rewriter.getIndexAttr(8)};
-
+                          rewriter.getIndexAttr(16)};
                       auto subview = rewriter.create<memref::SubViewOp>(
                           kForOp.getLoc(), rhsClone->getResult(0), offsets,
                           sizes, strides_splat);
-
-                      mlir::VectorType dstType = mlir::VectorType::get(
-                          {sizeFactor / 2}, rewriter.getF32Type());
 
                       auto evenB = rewriter.create<
                           mlir::x86vector::CvtPackedEvenIndexedToF32Op>(
                           kForOp.getLoc(), dstType, subview);
 
+                      matf32.push_back(evenB);
+
+                      auto subview1 = rewriter.create<memref::SubViewOp>(
+                          kForOp.getLoc(), rhsClone->getResult(0), offsets,
+                          sizes, strides_splat);
+
                       auto oddB = rewriter.create<
                           mlir::x86vector::CvtPackedOddIndexedToF32Op>(
-                          kForOp.getLoc(), dstType, subview);
+                          kForOp.getLoc(), dstType, subview1);
 
-                      auto shuffle = rewriter.create<vector::ShuffleOp>(
-                          kForOp.getLoc(),
-                          VectorType::get({sizeFactor}, rewriter.getF32Type()),
-                          evenB, oddB,
-                          ArrayRef<int64_t>{0, 4, 1, 5, 2, 6, 3, 7});
+                      // Odd FMAs
+                      matf32.push_back(oddB);
+                    }
+
+                    // Load A-Matrix and do FMAs
+                    for (int i = 0, k = 0; i < M; i++) {
+                      SmallVector<OpFoldResult> offsets = {
+                          rewriter.getIndexAttr(0),
+                          rewriter.getIndexAttr(i),
+                          rewriter.getIndexAttr(0),
+                      };
+                      auto subview = rewriter.create<memref::SubViewOp>(
+                          kForOp.getLoc(), lhsClone->getResult(0), offsets,
+                          sizes_splat, strides_splat);
+                      auto oddA =
+                          rewriter.create<mlir::x86vector::BcstToPackedF32Op>(
+                              kForOp.getLoc(), dstType, subview);
+
+                      for (int j = 0; j < (N / sizeFactor); j++) {
+                        auto fmaOdd = rewriter.create<vector::FMAOp>(
+                            kForOp.getLoc(), oddA, matf32[j],
+                            iterArgsNewKForOp[k]);
+                        k++;
+                        evenFMAs.push_back(fmaOdd);
+                      }
+                    }
+                  } else { // N->M
+                    // Load the A Matrix
+                    for (int i = 0; i < M; i++) {
+                      SmallVector<OpFoldResult> offsets = {
+                          rewriter.getIndexAttr(0),
+                          rewriter.getIndexAttr(i),
+                          rewriter.getIndexAttr(0),
+                      };
+                      auto subview = rewriter.create<memref::SubViewOp>(
+                          kForOp.getLoc(), lhsClone->getResult(0), offsets,
+                          sizes_splat, strides_splat);
+                      auto oddA =
+                          rewriter.create<mlir::x86vector::BcstToPackedF32Op>(
+                              kForOp.getLoc(), dstType, subview);
+
+                      matf32.push_back(oddA);
+                    }
+
+                    // Load odd elements of B-Matrix, perform fma (odd), and
+                    // store to a DS
+                    for (int j = 0; j < N; j = j + (sizeFactor * 2)) {
+                      SmallVector<OpFoldResult> offsets = {
+                          rewriter.getIndexAttr(0),
+                          rewriter.getIndexAttr(0),
+                          rewriter.getIndexAttr(j),
+                      };
+
+                      if ((N - j) <= 8) {
+                        llvm::SmallVector<OpFoldResult> sizes = {
+                            rewriter.getIndexAttr(1), rewriter.getIndexAttr(1),
+                            rewriter.getIndexAttr(8)};
+
+                        auto subview = rewriter.create<memref::SubViewOp>(
+                            kForOp.getLoc(), rhsClone->getResult(0), offsets,
+                            sizes, strides_splat);
+
+                        mlir::VectorType dstType = mlir::VectorType::get(
+                            {sizeFactor / 2}, rewriter.getF32Type());
+
+                        auto evenB = rewriter.create<
+                            mlir::x86vector::CvtPackedEvenIndexedToF32Op>(
+                            kForOp.getLoc(), dstType, subview);
+
+                        auto oddB = rewriter.create<
+                            mlir::x86vector::CvtPackedOddIndexedToF32Op>(
+                            kForOp.getLoc(), dstType, subview);
+
+                        auto shuffle = rewriter.create<vector::ShuffleOp>(
+                            kForOp.getLoc(),
+                            VectorType::get({sizeFactor},
+                                            rewriter.getF32Type()),
+                            evenB, oddB,
+                            ArrayRef<int64_t>{0, 4, 1, 5, 2, 6, 3, 7});
+
+                        for (int i = 0; i < M; i++) {
+                          auto fmaOdd = rewriter.create<vector::FMAOp>(
+                              kForOp.getLoc(), matf32[i], shuffle,
+                              iterArgsNewKForOp[(j / sizeFactor) +
+                                                (i * (N / sizeFactor))]);
+                          oddFMAs.push_back(fmaOdd);
+                        }
+
+                        continue;
+                      }
+
+                      llvm::SmallVector<OpFoldResult> sizes = {
+                          rewriter.getIndexAttr(1), rewriter.getIndexAttr(1),
+                          rewriter.getIndexAttr(16)};
+                      auto subview = rewriter.create<memref::SubViewOp>(
+                          kForOp.getLoc(), rhsClone->getResult(0), offsets,
+                          sizes, strides_splat);
+
+                      auto evenB = rewriter.create<
+                          mlir::x86vector::CvtPackedEvenIndexedToF32Op>(
+                          kForOp.getLoc(), dstType, subview);
 
                       for (int i = 0; i < M; i++) {
                         auto fmaOdd = rewriter.create<vector::FMAOp>(
-                            kForOp.getLoc(), matf32[i], shuffle,
+                            kForOp.getLoc(), matf32[i], evenB,
                             iterArgsNewKForOp[(j / sizeFactor) +
                                               (i * (N / sizeFactor))]);
                         oddFMAs.push_back(fmaOdd);
                       }
 
-                      continue;
+                      auto subview1 = rewriter.create<memref::SubViewOp>(
+                          kForOp.getLoc(), rhsClone->getResult(0), offsets,
+                          sizes, strides_splat);
+
+                      auto oddB = rewriter.create<
+                          mlir::x86vector::CvtPackedOddIndexedToF32Op>(
+                          kForOp.getLoc(), dstType, subview1);
+
+                      // Odd FMAs
+                      for (int i = 0; i < M; i++) {
+                        auto fmaOdd = rewriter.create<vector::FMAOp>(
+                            kForOp.getLoc(), matf32[i], oddB,
+                            iterArgsNewKForOp[((j + sizeFactor) / sizeFactor) +
+                                              (i * (N / sizeFactor))]);
+                        oddFMAs.push_back(fmaOdd);
+                      }
                     }
 
-                    llvm::SmallVector<OpFoldResult> sizes = {
-                        rewriter.getIndexAttr(1), rewriter.getIndexAttr(1),
-                        rewriter.getIndexAttr(16)};
-                    auto subview = rewriter.create<memref::SubViewOp>(
-                        kForOp.getLoc(), rhsClone->getResult(0), offsets, sizes,
-                        strides_splat);
-
-                    auto evenB = rewriter.create<
-                        mlir::x86vector::CvtPackedEvenIndexedToF32Op>(
-                        kForOp.getLoc(), dstType, subview);
-
+                    // Re-arrange the stored DPs in order of M -> N
                     for (int i = 0; i < M; i++) {
-                      auto fmaOdd = rewriter.create<vector::FMAOp>(
-                          kForOp.getLoc(), matf32[i], evenB,
-                          iterArgsNewKForOp[(j / sizeFactor) +
-                                            (i * (N / sizeFactor))]);
-                      oddFMAs.push_back(fmaOdd);
-                    }
-
-                    auto subview1 = rewriter.create<memref::SubViewOp>(
-                        kForOp.getLoc(), rhsClone->getResult(0), offsets, sizes,
-                        strides_splat);
-
-                    auto oddB = rewriter.create<
-                        mlir::x86vector::CvtPackedOddIndexedToF32Op>(
-                        kForOp.getLoc(), dstType, subview1);
-
-                    // Odd FMAs
-                    for (int i = 0; i < M; i++) {
-                      auto fmaOdd = rewriter.create<vector::FMAOp>(
-                          kForOp.getLoc(), matf32[i], oddB,
-                          iterArgsNewKForOp[((j + sizeFactor) / sizeFactor) +
-                                            (i * (N / sizeFactor))]);
-                      oddFMAs.push_back(fmaOdd);
-                    }
-                  }
-
-                  // Re-arrange the stored DPs in order of M -> N
-                  for (int i = 0; i < M; i++) {
-                    for (int j = 0; j < (N / sizeFactor); j++) {
-                      evenFMAs.push_back(oddFMAs[i + (j * M)]);
+                      for (int j = 0; j < (N / sizeFactor); j++) {
+                        evenFMAs.push_back(oddFMAs[i + (j * M)]);
+                      }
                     }
                   }
                 }
@@ -1528,7 +1618,7 @@ struct MicroKernelsOp : OpRewritePattern<vector::ContractionOp> {
                     }
 
                   } else { // N -> M
-                           // Load A matrix
+                    // Load A matrix
                     for (int i = 0; i < M; i++) {
                       Value indexOp_i = rewriter.create<arith::ConstantIndexOp>(
                           reductionForOp.getLoc(), i);
