@@ -143,7 +143,7 @@ jobs:
         run: |-
           CMD="KIND=Release COMPILER=clang LINKER=lld BENCHMARK_NUM_ITER=${{ env.NUM_ITER }} \
                 ${{ github.workspace }}/scripts/github/benchmark.sh -b -p"
-          ${{ env.SRUN }} --partition=ARL --time=0:30:00 -- $CMD
+          ${{ env.SRUN }} --partition=arl --time=0:30:00 -- $CMD
 
   TPP-MLIR-ARL-OMP:
     runs-on: pcl-tiergarten
