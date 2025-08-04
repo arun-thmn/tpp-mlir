@@ -62,6 +62,7 @@ import argparse
 import json
 import shlex
 import shutil
+import subprocess
 
 sys.path.append("harness")
 
@@ -459,6 +460,14 @@ class BenchmarkDriver(object):
                     else:
                         # List of possible supported (ex. avx512 OR sve2)
                         for ext in run["extensions"]:
+                            if ext == "arl":
+                                env = os.environ.copy()
+                                compile_cmd = ["clang", "./check-cpuid.c", "-o", "./check-cpuid", "-march=native"]
+                                compile_result = subprocess.run(compile_cmd, env=env, capture_output=True, text=True)
+                                compile_result1 = subprocess.run(["./check-cpuid"], env=env, capture_output=True, text=True)
+                                if compile_result1.returncode == 1:
+                                    supported = True
+                                    break
                             if self.exts.hasFlag(ext):
                                 self.logger.debug(
                                     f"{key} extension {ext} supported"
@@ -515,6 +524,15 @@ class BenchmarkDriver(object):
             print("")
 
         return True
+
+    def check_cpuid_feature(self):
+        # CPUID function 7, subfunction 1
+        eax, ebx, ecx, edx = cpuid.cpuid_count(7, 1)
+
+        # Check if bit 4 in EDX is set
+        if edx & (1 << 4):
+            return 1
+        return 0
 
 
 if __name__ == "__main__":
