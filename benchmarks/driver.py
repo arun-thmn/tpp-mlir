@@ -462,10 +462,8 @@ class BenchmarkDriver(object):
                         for ext in run["extensions"]:
                             if ext == "arl":
                                 env = os.environ.copy()
-                                compile_cmd = ["clang", "./check-cpuid.c", "-o", "./check-cpuid", "-march=native"]
-                                compile_result = subprocess.run(compile_cmd, env=env, capture_output=True, text=True)
-                                compile_result1 = subprocess.run(["./check-cpuid"], env=env, capture_output=True, text=True)
-                                if compile_result1.returncode == 1:
+                                compile_result = subprocess.run(["./check-cpuid"], env=env, capture_output=True, text=True)
+                                if compile_result.returncode == 1:
                                     supported = True
                                     break
                             if self.exts.hasFlag(ext):
