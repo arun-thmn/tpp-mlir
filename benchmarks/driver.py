@@ -523,16 +523,6 @@ class BenchmarkDriver(object):
 
         return True
 
-    def check_cpuid_feature(self):
-        # CPUID function 7, subfunction 1
-        eax, ebx, ecx, edx = cpuid.cpuid_count(7, 1)
-
-        # Check if bit 4 in EDX is set
-        if edx & (1 << 4):
-            return 1
-        return 0
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="TPP-MLIR Benchmark Harness")
 
