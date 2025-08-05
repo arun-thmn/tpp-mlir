@@ -6,7 +6,6 @@ target_compile_options(check-cpuid PRIVATE -O2)
 # Optional: ensure it outputs to a known build dir
 set_target_properties(check-cpuid PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/benchmarks
 )
 
 # Export the full path to parent scope

@@ -462,7 +462,7 @@ class BenchmarkDriver(object):
                         for ext in run["extensions"]:
                             if ext == "arl":
                                 env = os.environ.copy()
-                                compile_result = subprocess.run(["./check-cpuid"], env=env, capture_output=True, text=True)
+                                compile_result = subprocess.run([self.args.build + "/bin/check-cpuid"], env=env, capture_output=True, text=True)
                                 if compile_result.returncode == 1:
                                     supported = True
                                     break
