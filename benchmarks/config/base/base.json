@@ -181,7 +181,7 @@
       "benchmark": [ "mlir-gen", "--kernel=const --bias --relu --float-type=bf16 --batch=512 --layers=1024,1024,1024,1024 --tiles=32,32,32 --vnni=4" ],
       "environment": {},
       "flags": [ "-n", "100" ],
-      "extensions": [ "svebf16" ]
+      "extensions": [ "svebf16"]
     }
   }},
   {
