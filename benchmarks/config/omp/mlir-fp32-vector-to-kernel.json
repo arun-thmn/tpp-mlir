@@ -28,6 +28,20 @@
       "environment": { "OMP_NUM_THREADS": "16", "KMP_AFFINITY": "granularity=fine,verbose,compact,1,0" },
       "flags": [ "-n", "100", "-run-args='--def-parallel --parallel-task-grid=2,8 --vector-to-kernels --registerBlocking=8,32,1 '" ],
       "extensions": [ "avx512.*" ]
+    },
+    "fp32_3x1024_omp_32_mlir": {
+      "type": "IR-GEN",
+      "benchmark": [ "mlir-gen", "--kernel=const --float-type=f32 --batch=512 --layers=1024,1024,1024,1024 --tiles=32,32,32" ],
+      "environment": { "OMP_NUM_THREADS": "32", "KMP_AFFINITY": "granularity=fine,verbose,compact,1,0" },
+      "flags": [ "-n", "100", "-run-args='--def-parallel --parallel-task-grid=2,4 --vector-to-kernels --registerBlocking=8,32,1 '" ],
+      "extensions": [ "avx512.*" ]
+    },
+    "fp32_3x1024_omp_64_mlir": {
+      "type": "IR-GEN",
+      "benchmark": [ "mlir-gen", "--kernel=const --float-type=f32 --batch=512 --layers=1024,1024,1024,1024 --tiles=32,32,32" ],
+      "environment": { "OMP_NUM_THREADS": "64", "KMP_AFFINITY": "granularity=fine,verbose,compact,1,0" },
+      "flags": [ "-n", "100", "-run-args='--def-parallel --parallel-task-grid=2,4 --vector-to-kernels --registerBlocking=8,32,1 '" ],
+      "extensions": [ "avx512.*" ]
     }
   }},
   {
