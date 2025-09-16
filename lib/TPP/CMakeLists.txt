@@ -25,6 +25,8 @@ add_mlir_library(TPPPipeline
     MLIRIR
     ${mlir_dialect_libs}
     ${conversion_libs}
+    MLIRRegisterAllDialects
+    MLIRRegisterAllPasses
     TPPGPU
     TPPPassBundles
   )

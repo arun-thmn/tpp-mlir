@@ -25,6 +25,36 @@
 #include "TPP/Transforms/Utils/VNNIUtils.h"
 #include "mlir/Transforms/Passes.h"
 
+
+#include "mlir/Pass/PassOptions.h"
+#include "mlir/Dialect/MemRef/Transforms/Passes.h"
+#include "mlir/Dialect/Arith/Transforms/Passes.h"
+#include "mlir/Conversion/VectorToLLVM/ConvertVectorToLLVMPass.h"
+#include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
+#include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
+#include "mlir/Dialect/GPU/Transforms/Passes.h"
+#include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
+
+#include "mlir/Conversion/TensorToLinalg/TensorToLinalgPass.h"
+#include "mlir/Conversion/TensorToLinalg/TensorToLinalg.h"
+#include "mlir/Dialect/Linalg/Passes.h"
+#include "mlir/Conversion/SCFToOpenMP/SCFToOpenMP.h"
+#include "mlir/Conversion/VectorToSCF/VectorToSCF.h"
+#include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
+#include "mlir/Conversion/GPUCommon/GPUCommonPass.h"
+#include "mlir/Dialect/Async/Passes.h"
+#include "mlir/Conversion/AsyncToLLVM/AsyncToLLVM.h"
+#include "mlir/Conversion/IndexToLLVM/IndexToLLVM.h"
+#include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
+#include "mlir/Conversion/VectorToLLVM/ConvertVectorToLLVM.h"
+#include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
+#include "mlir/Conversion/OpenMPToLLVM/ConvertOpenMPToLLVM.h"
+#include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
+#include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
+#include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVMPass.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+
+
 #include <string>
 
 using namespace mlir;

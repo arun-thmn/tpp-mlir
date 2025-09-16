@@ -52,6 +52,7 @@
 #include "mlir/Target/LLVMIR/Export.h"
 #include "mlir/Target/LLVMIR/ModuleTranslation.h"
 #include "mlir/Dialect/Transform/TuneExtension/TuneExtensionOps.h"
+#include "mlir/Dialect/Transform/TuneExtension/TuneExtension.h"
 
 #include "TPP/Dialect/Check/CheckDialect.h"
 #include "TPP/Dialect/Perf/PerfDialect.h"

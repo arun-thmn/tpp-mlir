@@ -13,6 +13,7 @@ set(LIBS
         ${dialect_libs}
         ${conversion_libs}
         ${extension_libs}
+	MLIRRegisterAllExtensions
         MLIRAnalysis
         MLIRExecutionEngine
         MLIRIR

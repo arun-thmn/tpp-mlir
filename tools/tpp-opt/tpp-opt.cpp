@@ -23,6 +23,7 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "mlir/Dialect/Transform/TuneExtension/TuneExtensionOps.h"
+#include "mlir/Dialect/Transform/TuneExtension/TuneExtension.h"
 
 #include "TPP/Dialect/Check/BufferizableOpInterfaceImpl.h"
 #include "TPP/Dialect/Check/CheckDialect.h"
