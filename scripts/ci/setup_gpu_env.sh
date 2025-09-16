@@ -11,7 +11,7 @@ source ${SCRIPT_DIR}/ci/common.sh
 if [[ ${GPU,,} =~ "cuda" ]]; then
   echo "Setting up CUDA environment"
   echo "Hard-coding CUDA-compatible GCC version (12.3)"
-  source /swtools/gcc/gcc-12.3.0/gcc_vars.sh
+  #source /swtools/gcc/gcc-12.3.0/gcc_vars.sh
   source /swtools/cuda/latest/cuda_vars.sh
   check_program nvcc
 fi
