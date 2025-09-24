@@ -150,12 +150,10 @@ def MicroKernels : Pass<"vector-contract-to-micro-kernels"> {
    let description = [{Add commentMore actions
      Perform  micro kernel lowering of vector contraction operation.
    }];
-   let dependentDialects = [ "vector::VectorDialect",
-                             "memref::MemRefDialect",
-                             "linalg::LinalgDialect",
-                             "scf::SCFDialect",
-                             "arith::ArithDialect",
-                             "x86vector::X86VectorDialect" ];
+   let dependentDialects = [ "vector::VectorDialect", 
+			     "scf::SCFDialect", 
+			     "arith::ArithDialect",
+			     "x86vector::X86VectorDialect" ];
   let options = [
          Option<"targetFeature", "target-feature", "std::string", "",
                 "Target feature for a given architecture">,
@@ -163,9 +161,9 @@ def MicroKernels : Pass<"vector-contract-to-micro-kernels"> {
 }
 
 def MicroKernelsAMX : Pass<"vector-contract-to-micro-kernels-amx"> {
-   let summary = "Perform  lowering of vector contraction operation";
-   let description = [{Add commentMore actions
-     Perform  micro kernel lowering of vector contraction operation.
+   let summary = "Perform AMX target lowering of vector contraction operation";
+   let description = [{
+     Perform  flat layout AMX target micro kernel lowering of vector contraction operation.
    }];
    let dependentDialects = [ "vector::VectorDialect",
                              "memref::MemRefDialect",

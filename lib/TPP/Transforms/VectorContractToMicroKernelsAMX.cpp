@@ -459,15 +459,28 @@ struct MicroKernelsAMXOp : OpRewritePattern<vector::ContractionOp> {
     SmallVector<Value> loadsB;
     SmallVector<Value> loadsA;
 
+
+    // We need to capture the dim size of K. With whic, we reuse the 
+    // buffer effectively to store the VNNI packed B-Matrix.
+    // Case 1: K dim > 32
+    // Case 2: K dim / 32 = odd quotient.
     bool bigK = false;
     bool oddK = false;
 
-    auto bufferType = MemRefType::get({2, K, N}, rewriter.getBF16Type());
-    auto bBuffer =
-        rewriter.create<memref::AllocaOp>(kForOp.getLoc(), bufferType);
+    int64_t ubVal = 32;
+    mlir::Value ub = kForOp.getUpperBound();
+    if (auto constOp =
+            ub.getDefiningOp<mlir::arith::ConstantOp>()) {
+      if (auto intAttr = llvm::dyn_cast<mlir::IntegerAttr>(
+              constOp.getValue())) {
+        ubVal = intAttr.getInt();
+      }
+    }
 
-    // AMX-Splat
-    // code for the new s/w-pipeline
+    bigK = ubVal > 32;
+    oddK = (((ubVal / 32) % 2) == 1) && bigK;
+
+
     Value c0 =
         rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), 0);
     Value c1 =
@@ -479,6 +492,17 @@ struct MicroKernelsAMXOp : OpRewritePattern<vector::ContractionOp> {
     Value c32 =
         rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), 32);
 
+
+    // Buffer to save the VNNI packed B-Matrix
+    auto bufferType = MemRefType::get({2, K, N}, rewriter.getBF16Type());
+    auto bBuffer =
+        rewriter.create<memref::AllocaOp>(kForOp.getLoc(), bufferType);
+
+
+    // s/w pipeline: pack the first set of B-Matrix into VNNI before the 
+    // 0th batch-reduce iteration
+    // We pack two vector<32xbf16> at i and i+1th index. Then store, the
+    // two VNNI packed vector<32xbf16> at j and j+16th index of the buffer.
     rewriter.create<scf::ForOp>(
         reductionForOp.getLoc(), c0, c32, c2, ValueRange{},
         [&](OpBuilder &nestedBuilder, Location loc, Value iv,
@@ -491,39 +515,44 @@ struct MicroKernelsAMXOp : OpRewritePattern<vector::ContractionOp> {
           auto rhsClone = rewriter.clone(
               *vectorReadOpRhs.getBase().getDefiningOp(), rhsMapping);
 
-          Value addI =
+	  // Add the iv by 1 to load the i+1th vector<32xbf16>
+          Value i1_load =
               rewriter.create<arith::AddIOp>(reductionForOp.getLoc(), c1, iv);
 
-          Value divI =
+	  // Divide the iv by 2 to get the jth position to store shuffled[0] vector<32xbf16>
+          Value j_pos =
               rewriter.create<arith::DivUIOp>(reductionForOp.getLoc(), iv, c2);
+	  // Add 16 to the divided j_pos to get j+16th position to store shuffled[1] vector<32xbf16>
+          Value j16_pos = rewriter.create<arith::AddIOp>(reductionForOp.getLoc(),
+                                                       c16, j_pos);
 
-          Value addII = rewriter.create<arith::AddIOp>(reductionForOp.getLoc(),
-                                                       c16, divI);
-
+	  
           loadPackStore(kForOp.getLoc(), rewriter, rhsClone->getResult(0),
-                        bBuffer, elementType, iv, addI, c0, divI, addII, N,
+                        bBuffer, elementType, iv, i1_load, c0, j_pos, j16_pos, N,
                         vnni);
 
           nestedBuilder.create<scf::YieldOp>(reductionForOp.getLoc());
         });
 
-    Value subI = rewriter.create<arith::SubIOp>(
+    // Peel out the last iteration of batch-reduce and K loops
+    Value subBRLoop = rewriter.create<arith::SubIOp>(
         reductionForOp.getLoc(), reductionForOp.getUpperBound(), c1);
-
-    Value subIKloop = rewriter.create<arith::SubIOp>(
+    Value subKloop = rewriter.create<arith::SubIOp>(
         kForOp.getLoc(), kForOp.getUpperBound(), c32);
 
-    // Code to re-create the reduction and k loop with iter args
+    // Code to re-create the batch-reduce loop (0 to n-2) and K loop (0 to n-2) with iter args
     auto newReductionForOp = rewriter.create<scf::ForOp>(
-        reductionForOp.getLoc(), reductionForOp.getLowerBound(), subI,
+        reductionForOp.getLoc(), reductionForOp.getLowerBound(), subBRLoop,
         reductionForOp.getStep(), loopItrArgs,
         [&](OpBuilder &rewriterNewReductionForOp, Location locNewReductionForOp,
             Value ivNewReductionForOp, ValueRange iterArgsNewReductionForOp) {
           auto newKForOp = rewriter.create<scf::ForOp>(
-              kForOp.getLoc(), kForOp.getLowerBound(), subIKloop,
+              kForOp.getLoc(), kForOp.getLowerBound(), subKloop,
               kForOp.getStep(), iterArgsNewReductionForOp,
               [&](OpBuilder &rewriterNewKForOp, Location locNewKForOp,
                   Value ivNewKForOp, ValueRange iterArgsNewKForOp) {
+
+	        // A-Matrix subview
                 IRMapping mapping;
                 mapping.map(
                     vectorReadOpLhs.getBase().getDefiningOp()->getOperand(1),
@@ -534,105 +563,102 @@ struct MicroKernelsAMXOp : OpRewritePattern<vector::ContractionOp> {
                 auto lhsClone = rewriterNewKForOp.clone(
                     *vectorReadOpLhs.getBase().getDefiningOp(), mapping);
 
-                Value newIVk = rewriter.create<arith::AddIOp>(
+		// We extract the B-Matrix subview to load + VNNI pack the next set of
+		// sub-matrix
+                Value ivK_add32 = rewriter.create<arith::AddIOp>(
                     reductionForOp.getLoc(), c32, ivNewKForOp);
 
-                // AMX Splat
-                // New loop bounds for the reduction loop - to peel the last
-                // iteration
-
-                int64_t ubVal = 32;
-                mlir::Value ub = kForOp.getUpperBound();
-                if (auto constOp =
-                        ub.getDefiningOp<mlir::arith::ConstantOp>()) {
-                  if (auto intAttr = llvm::dyn_cast<mlir::IntegerAttr>(
-                          constOp.getValue())) {
-                    ubVal = intAttr.getInt();
-                  }
-                }
-
-                bigK = ubVal > 32;
-                oddK = (((ubVal / 32) % 2) == 1) && bigK;
-
-                IRMapping rhsMapping2;
-                rhsMapping2.map(
+		// B-Matrix subview
+                IRMapping rhsMapping;
+                rhsMapping.map(
                     vectorReadOpRhs.getBase().getDefiningOp()->getOperand(1),
                     ivNewReductionForOp);
-                rhsMapping2.map(
+                rhsMapping.map(
                     vectorReadOpRhs.getBase().getDefiningOp()->getOperand(2),
-                    newIVk);
-                auto rhsClone2 = rewriterNewKForOp.clone(
-                    *vectorReadOpRhs.getBase().getDefiningOp(), rhsMapping2);
+                    ivK_add32);
+                auto rhsClone = rewriterNewKForOp.clone(
+                    *vectorReadOpRhs.getBase().getDefiningOp(), rhsMapping);
 
-                // The AMX code starts here.
-                //
-                // 1st Reduction Loop
+		// Load A-Matrix
                 loadsA = loadTiles(kForOp.getLoc(), rewriter,
                                    lhsClone->getResult(0), c0, M, K);
 
-                // Create a for loop for the shuffle
 
+		// s/w pipeline: pack the current iteration + 1th  of B sub-Matrix into VNNI 
+		// int the current iteration.
+		// To store the packed B sub-matrix into 0th or 1st buffer is decied based on the
+		// remainder of BR or K loop induction variables.
                 rewriter.create<scf::ForOp>(
                     reductionForOp.getLoc(), c0, c32, c2, ValueRange{},
                     [&](OpBuilder &nestedBuilder, Location loc, Value iv,
                         ValueRange iterArgs) {
-                      Value addI = rewriter.create<arith::AddIOp>(
+
+                      Value i1_load = rewriter.create<arith::AddIOp>(
                           reductionForOp.getLoc(), c1, iv);
-
-                      Value divI = rewriter.create<arith::DivUIOp>(
+                      Value j_pos = rewriter.create<arith::DivUIOp>(
                           reductionForOp.getLoc(), iv, c2);
+                      Value j16_pos = rewriter.create<arith::AddIOp>(
+                          reductionForOp.getLoc(), c16, j_pos);
 
-                      Value addII = rewriter.create<arith::AddIOp>(
-                          reductionForOp.getLoc(), c16, divI);
-
-                      Value divII = rewriter.create<arith::DivUIOp>(
-                          reductionForOp.getLoc(), newIVk, c32);
-                      auto rem = rewriter.create<arith::RemUIOp>(
+		      // Code to decide whether to store the packed sub-matrix
+		      // either 0th or 1st buffer
+                      Value quotient_K = rewriter.create<arith::DivUIOp>(
+                          reductionForOp.getLoc(), ivK_add32, c32);
+                      Value rem_K = rewriter.create<arith::RemUIOp>(
                           reductionForOp.getLoc(), rewriter.getIndexType(),
-                          divII, c2);
+                          quotient_K, c2);
 
+		      // if K quotient is odd. Then, BR loop iv is taken
+		      // into consideration
                       if (oddK) {
-                        auto rem2 = rewriter.create<arith::RemUIOp>(
+                        auto rem_BR = rewriter.create<arith::RemUIOp>(
                             reductionForOp.getLoc(), rewriter.getIndexType(),
                             ivNewReductionForOp, c2);
                         auto remAdd = rewriter.create<arith::AddIOp>(
                             reductionForOp.getLoc(), rewriter.getIndexType(),
-                            rem, rem2);
-                        rem = rewriter.create<arith::RemUIOp>(
+                            rem_K, rem_BR);
+                        rem_K = rewriter.create<arith::RemUIOp>(
                             reductionForOp.getLoc(), rewriter.getIndexType(),
                             remAdd, c2);
                       }
 
                       loadPackStore(kForOp.getLoc(), rewriter,
-                                    rhsClone2->getResult(0), bBuffer,
-                                    elementType, iv, addI, rem, divI, addII, N,
+                                    rhsClone->getResult(0), bBuffer,
+				    elementType, iv, i1_load, rem_K, j_pos,
+				    j16_pos, N,
                                     vnni);
 
                       nestedBuilder.create<scf::YieldOp>(
                           reductionForOp.getLoc());
                     });
 
-                Value divI = rewriter.create<arith::DivUIOp>(
+
+		// Load B sub-matrix from the buffer.
+		// Same way like storing, we load from buffer 0th or 1st
+		// based on the
+                // remainder of BR or K loop induction variables.
+                Value quotient_K = rewriter.create<arith::DivUIOp>(
                     reductionForOp.getLoc(), ivNewKForOp, c32);
-                auto rem1 = rewriter.create<arith::RemUIOp>(
-                    reductionForOp.getLoc(), rewriter.getIndexType(), divI, c2);
+                auto rem_K = rewriter.create<arith::RemUIOp>(
+                    reductionForOp.getLoc(), rewriter.getIndexType(), quotient_K, c2);
 
                 if (oddK) {
-                  auto rem2 = rewriter.create<arith::RemUIOp>(
+                  auto rem_BR = rewriter.create<arith::RemUIOp>(
                       reductionForOp.getLoc(), rewriter.getIndexType(),
                       ivNewReductionForOp, c2);
                   auto remAdd = rewriter.create<arith::AddIOp>(
-                      reductionForOp.getLoc(), rewriter.getIndexType(), rem1,
-                      rem2);
-                  rem1 = rewriter.create<arith::RemUIOp>(
+                      reductionForOp.getLoc(), rewriter.getIndexType(), rem_K,
+                      rem_BR);
+                  rem_K = rewriter.create<arith::RemUIOp>(
                       reductionForOp.getLoc(), rewriter.getIndexType(), remAdd,
                       c2);
                 }
 
                 // Load B-Matrix
                 loadsB =
-                    loadTiles(kForOp.getLoc(), rewriter, bBuffer, rem1, K, N);
+                    loadTiles(kForOp.getLoc(), rewriter, bBuffer, rem_K, K, N);
 
+		// Compute the tiled dot-product with the A and B tile loads.
                 computedFMAs = computeTileMul(kForOp.getLoc(), rewriter, loadsA,
                                               loadsB, iterArgsNewKForOp, M, N);
 
@@ -640,12 +666,14 @@ struct MicroKernelsAMXOp : OpRewritePattern<vector::ContractionOp> {
                                                        computedFMAs);
               });
 
-          // K-Loop (n-2 - n-1) within the 1st reduction loop
-          auto newKForOp1 = rewriter.create<scf::ForOp>(
-              kForOp.getLoc(), subIKloop, kForOp.getUpperBound(),
+          // Create the last iteration of K-Loop within the {0 to n-2}  reduction loop
+          auto newKForOp_last = rewriter.create<scf::ForOp>(
+              kForOp.getLoc(), subKloop, kForOp.getUpperBound(),
               kForOp.getStep(), newKForOp.getResults(),
               [&](OpBuilder &rewriterNewKForOp, Location locNewKForOp,
                   Value ivNewKForOp, ValueRange iterArgsNewKForOp) {
+	        
+	        // A subview
                 IRMapping mapping;
                 mapping.map(
                     vectorReadOpLhs.getBase().getDefiningOp()->getOperand(1),
@@ -656,25 +684,26 @@ struct MicroKernelsAMXOp : OpRewritePattern<vector::ContractionOp> {
                 auto lhsClone = rewriterNewKForOp.clone(
                     *vectorReadOpLhs.getBase().getDefiningOp(), mapping);
 
-                Value newIV = rewriter.create<arith::AddIOp>(
+		// B subview
+                Value ivK_add32 = rewriter.create<arith::AddIOp>(
                     reductionForOp.getLoc(), c1, ivNewReductionForOp);
 
                 IRMapping mapping1;
                 mapping1.map(
                     vectorReadOpRhs.getBase().getDefiningOp()->getOperand(1),
-                    newIV);
+                    ivK_add32);
                 mapping1.map(
                     vectorReadOpRhs.getBase().getDefiningOp()->getOperand(2),
                     c0);
-                auto rhsClone2 = rewriterNewKForOp.clone(
+                auto rhsClone = rewriterNewKForOp.clone(
                     *vectorReadOpRhs.getBase().getDefiningOp(), mapping1);
 
-                //  Done with loading of A Matrix
 
+		// Load A-Matrix
                 loadsA = loadTiles(kForOp.getLoc(), rewriter,
                                    lhsClone->getResult(0), c0, M, K);
 
-                // Shuffling
+                // s/w pipeline: load, pack, and store into buffer
                 rewriter.create<scf::ForOp>(
                     reductionForOp.getLoc(), c0, c32, c2, ValueRange{},
                     [&](OpBuilder &nestedBuilder, Location loc, Value iv,
@@ -695,11 +724,11 @@ struct MicroKernelsAMXOp : OpRewritePattern<vector::ContractionOp> {
                             reductionForOp.getLoc(), 2);
                         cIndex = rewriter.create<arith::RemUIOp>(
                             reductionForOp.getLoc(), rewriter.getIndexType(),
-                            newIV, c2);
+                            ivK_add32, c2);
                       }
 
                       loadPackStore(kForOp.getLoc(), rewriter,
-                                    rhsClone2->getResult(0), bBuffer,
+                                    rhsClone->getResult(0), bBuffer,
                                     elementType, iv, addI, cIndex, divI, addII,
                                     N, vnni);
 
@@ -742,17 +771,17 @@ struct MicroKernelsAMXOp : OpRewritePattern<vector::ContractionOp> {
               });
 
           rewriterNewReductionForOp.create<scf::YieldOp>(
-              locNewReductionForOp, newKForOp1.getResults());
+              locNewReductionForOp, newKForOp_last.getResults());
         });
 
     // 2nd reduction loop
     auto newReductionForOp1 = rewriter.create<scf::ForOp>(
-        reductionForOp.getLoc(), subI, reductionForOp.getUpperBound(),
+        reductionForOp.getLoc(), subBRLoop, reductionForOp.getUpperBound(),
         reductionForOp.getStep(), newReductionForOp.getResults(),
         [&](OpBuilder &rewriterNewReductionForOp, Location locNewReductionForOp,
             Value ivNewReductionForOp, ValueRange iterArgsNewReductionForOp) {
-          auto newKForOp1 = rewriter.create<scf::ForOp>(
-              kForOp.getLoc(), kForOp.getLowerBound(), subIKloop,
+          auto newKForOp_last = rewriter.create<scf::ForOp>(
+              kForOp.getLoc(), kForOp.getLowerBound(), subKloop,
               kForOp.getStep(), iterArgsNewReductionForOp,
               [&](OpBuilder &rewriterNewKForOp, Location locNewKForOp,
                   Value ivNewKForOp, ValueRange iterArgsNewKForOp) {
@@ -856,8 +885,8 @@ struct MicroKernelsAMXOp : OpRewritePattern<vector::ContractionOp> {
           // New code after the CGO paper
 
           auto newKForOp2 = rewriter.create<scf::ForOp>(
-              kForOp.getLoc(), subIKloop, kForOp.getUpperBound(),
-              kForOp.getStep(), newKForOp1.getResults(),
+              kForOp.getLoc(), subKloop, kForOp.getUpperBound(),
+              kForOp.getStep(), newKForOp_last.getResults(),
               [&](OpBuilder &rewriterNewKForOp, Location locNewKForOp,
                   Value ivNewKForOp, ValueRange iterArgsNewKForOp) {
                 IRMapping mapping;
