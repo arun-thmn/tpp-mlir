@@ -58,6 +58,7 @@ private:
     MicroKernelsOptions options;
     options.targetFeature = vecBundleCpuTargetFeature;
     pm.addNestedPass<func::FuncOp>(createMicroKernels(options));
+    pm.addNestedPass<func::FuncOp>(createMicroKernelsAMX());
     pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
   }
 };

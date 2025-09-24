@@ -1,0 +1,1248 @@
+//===- VectorContractToMicroKernelsAMX.cpp --------------------------*-
+//C++-*-===//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// This file implements lowering of vector contraction using AMX ops
+// to micro kernels.
+// Target types: bf16
+//
+//===----------------------------------------------------------------------===//
+#include "TPP/Passes.h"
+#include "TPP/Transforms/Transforms.h"
+#include "TPP/Transforms/Utils/VNNIUtils.h"
+#include "mlir/Dialect/AMX/AMXDialect.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/Transforms/Transforms.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/Dialect/Vector/Transforms/LoweringPatterns.h"
+#include "mlir/Dialect/Vector/Transforms/VectorRewritePatterns.h"
+#include "mlir/Dialect/X86Vector/X86VectorDialect.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/IRMapping.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/Pass/Pass.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+
+namespace mlir {
+namespace tpp {
+#define GEN_PASS_DEF_MICROKERNELSAMX
+#include "TPP/Passes.h.inc"
+} // namespace tpp
+} // namespace mlir
+
+namespace mlir {
+namespace tpp {
+
+static FailureOr<SmallVector<scf::ForOp>>
+getNestedLoop(vector::ContractionOp contractOp) {
+  SmallVector<scf::ForOp> list;
+  Operation *current = contractOp;
+  // It is register tiled loop structure on batch reduce matmul
+  // (M->N->Batch-reduce->K).
+  // TODO: support for matmul and batch matmul
+  for (int i = 0; i < 4; i++) {
+    Operation *parent = current->getParentOfType<scf::ForOp>();
+    if (!parent)
+      return failure();
+    list.push_back(dyn_cast<scf::ForOp>(parent));
+    current = parent;
+  }
+  return list;
+}
+
+static bool isTransposedMatrix(vector::ContractionOp contractOp,
+                               Type elementType, bool isSplat) {
+  SmallVector<AffineMap, 3> contractMaps = contractOp.getIndexingMapsArray();
+  AffineMap mapA = contractMaps[0];
+  AffineMap mapB = contractMaps[1];
+
+  bool isUnPackedType = elementType.isF32() || isSplat;
+  bool isPackedType = (elementType.isF16() || elementType.isBF16() ||
+                       elementType.isSignlessInteger(8)) &&
+                      !isSplat;
+
+  auto resultsMapA = mapA.getNumResults();
+  auto resultsMapB = mapB.getNumResults();
+
+  if (isUnPackedType) {
+    assert(resultsMapA == 3 && resultsMapB == 3 &&
+           "Result dim map for A and B should be 3");
+  }
+
+  if (isPackedType) {
+    assert(resultsMapA == 4 && resultsMapB == 4 &&
+           "Result dim map for A and B should be 4");
+  }
+
+  auto inputsMapA = mapA.getNumInputs();
+  auto inputsMapB = mapB.getNumInputs();
+
+  if (isUnPackedType) {
+    assert(inputsMapA == 4 && inputsMapB == 4 &&
+           "Input dim map for A and B should be 4");
+  }
+
+  if (isPackedType) {
+    assert(inputsMapA == 5 && inputsMapB == 5 &&
+           "Input dim map for A and B should be 5");
+  }
+
+  auto dimBR = dyn_cast<AffineDimExpr>(mapA.getResult(0));
+
+  SmallVector<AffineDimExpr> listMxNxK;
+  for (unsigned int i = 0; i < inputsMapA; i++) {
+    auto affineExpr =
+        dyn_cast<AffineDimExpr>(mlir::getAffineDimExpr(i, mapA.getContext()));
+
+    if (isPackedType) {
+      auto vnniDim = dyn_cast<AffineDimExpr>(mapA.getResult(3));
+      if (affineExpr != vnniDim && affineExpr != dimBR)
+        listMxNxK.push_back(affineExpr);
+    }
+
+    if (isUnPackedType && (affineExpr != dimBR)) {
+      listMxNxK.push_back(affineExpr);
+    }
+  }
+
+  auto dimM = listMxNxK[0];
+  auto dimN = listMxNxK[1];
+  auto dimK = listMxNxK[2];
+
+  // Transpose if the mapA is kxm
+  if (dyn_cast<AffineDimExpr>(mapA.getResult(1)) == dimK &&
+      dyn_cast<AffineDimExpr>(mapA.getResult(2)) == dimM)
+    return true;
+  // Transpose if the mapB is nxk
+  if (dyn_cast<AffineDimExpr>(mapB.getResult(1)) == dimN &&
+      dyn_cast<AffineDimExpr>(mapB.getResult(2)) == dimK)
+    return true;
+
+  return false;
+}
+
+static bool permutationCheck(vector::ContractionOp contractOp, Type elementType,
+                             bool isSplat) {
+  SmallVector<AffineMap, 3> contractMaps = contractOp.getIndexingMapsArray();
+  AffineMap mapA = contractMaps[0];
+  AffineMap mapB = contractMaps[1];
+
+  bool isUnPackedType = elementType.isF32() || isSplat;
+  bool isPackedType = (elementType.isF16() || elementType.isBF16() ||
+                       elementType.isSignlessInteger(8)) &&
+                      !isSplat;
+
+  auto inputsMapA = mapA.getNumInputs();
+  SmallVector<AffineDimExpr> inputDims;
+  for (unsigned int i = 0; i < inputsMapA; i++) {
+    auto affineExpr =
+        dyn_cast<AffineDimExpr>(mlir::getAffineDimExpr(i, mapA.getContext()));
+    inputDims.push_back(affineExpr);
+  }
+
+  bool flag = true;
+  // mapA result dims
+  auto resultsMapA = mapA.getNumResults();
+  SmallVector<AffineDimExpr> outputDimsA;
+  for (unsigned int i = 0; i < resultsMapA; i++) {
+    auto affineExpr = dyn_cast<AffineDimExpr>(mapA.getResult(i));
+    outputDimsA.push_back(affineExpr);
+  }
+
+  if (isPackedType) {
+    // We match the pattern {Batch-reduction, vnni, M, N, K} or
+    // {Batch-reduction, M, N, K, vnni} -> {Batch-reduction, M, K, vnni}
+    auto c1 = inputDims[0] == outputDimsA[0];
+    auto c2 = (inputDims[1] == outputDimsA[3]) &&
+              (inputDims[2] == outputDimsA[1]) &&
+              (inputDims[4] == outputDimsA[2]);
+    auto c3 = (inputDims[1] == outputDimsA[1]) &&
+              (inputDims[3] == outputDimsA[2]) &&
+              (inputDims[4] == outputDimsA[3]);
+    flag = flag && (c1 && (c2 || c3));
+  }
+
+  if (isUnPackedType) {
+    // We match the pattern {Batch-reduction, M, N, K}
+    // -> {Batch-reduction, M, K}
+    auto c1 = inputDims[0] == outputDimsA[0];
+    auto c2 =
+        (inputDims[1] == outputDimsA[1]) && (inputDims[3] == outputDimsA[2]);
+    flag = flag && (c1 && c2);
+  }
+
+  // mapB result dims
+  auto resultsMapB = mapB.getNumResults();
+  SmallVector<AffineDimExpr> outputDimsB;
+  for (unsigned int i = 0; i < resultsMapB; i++) {
+    auto affineExpr = dyn_cast<AffineDimExpr>(mapB.getResult(i));
+    outputDimsB.push_back(affineExpr);
+  }
+
+  if (isPackedType) {
+    // We match the pattern {Batch-reduction, vnni, M, N, K} or
+    // {Batch-reduction, M, N, K, vnni} -> {Batch-reduction, K, N, vnni}
+    auto c4 = inputDims[0] == outputDimsB[0];
+    auto c5 = (inputDims[1] == outputDimsB[3]) &&
+              (inputDims[4] == outputDimsB[1]) &&
+              (inputDims[3] == outputDimsB[2]);
+    auto c6 = (inputDims[2] == outputDimsB[2]) &&
+              (inputDims[3] == outputDimsB[1]) &&
+              (inputDims[4] == outputDimsB[3]);
+    flag = flag && (c4 && (c5 || c6));
+  }
+
+  if (isUnPackedType) {
+    // We match the pattern {Batch-reduction, M, N, K}
+    // -> {Batch-reduction, K, N}
+    auto c4 = inputDims[0] == outputDimsB[0];
+    auto c5 =
+        (inputDims[2] == outputDimsB[2]) && (inputDims[3] == outputDimsB[1]);
+    flag = flag && (c4 && c5);
+  }
+
+  return flag;
+}
+
+static Value performBitcast(Location loc, PatternRewriter &rewriter,
+                            Value vector, int64_t sizeFactor, int64_t vnni,
+                            Type elementType, Type i32Type, Type i16Type,
+                            Value cst16) {
+
+  auto bitcast_i16 = rewriter.create<vector::BitCastOp>(
+      loc, VectorType::get(sizeFactor, i16Type), vector);
+  auto extend_i32 = rewriter.create<arith::ExtUIOp>(
+      loc, VectorType::get(sizeFactor, i32Type), bitcast_i16);
+  auto vectType = VectorType::get(sizeFactor, i32Type);
+  auto shiftOp = rewriter.create<arith::ShLIOp>(
+      loc, vectType, extend_i32,
+      rewriter.create<vector::BroadcastOp>(loc, vectType, cst16));
+  auto value = rewriter.create<vector::BitCastOp>(
+      loc, VectorType::get(sizeFactor, rewriter.getF32Type()), shiftOp);
+
+  return value;
+}
+
+static SmallVector<Value> performShuffle(Location loc,
+                                         PatternRewriter &rewriter, Value vec1,
+                                         Value vec2, int64_t elementSize,
+                                         int64_t sizeFactor, int64_t vnni) {
+  SmallVector<Value> vectors;
+  if (elementSize == 16) {
+    auto shuffle = rewriter.create<vector::ShuffleOp>(
+        loc, VectorType::get({sizeFactor * vnni}, rewriter.getBF16Type()), vec1,
+        vec2, ArrayRef<int64_t>{0,  16, 1,  17, 2,  18, 3,  19, 4,  20, 5,
+                                21, 6,  22, 7,  23, 8,  24, 9,  25, 10, 26,
+                                11, 27, 12, 28, 13, 29, 14, 30, 15, 31});
+
+    vectors.push_back(shuffle);
+  }
+
+  if (elementSize == 32) {
+    auto shuffle1 = rewriter.create<vector::ShuffleOp>(
+        loc, VectorType::get({sizeFactor * vnni}, rewriter.getBF16Type()), vec1,
+        vec2, ArrayRef<int64_t>{0,  32, 1,  33, 2,  34, 3,  35, 8,  40, 9,
+                                41, 10, 42, 11, 43, 16, 48, 17, 49, 18, 50,
+                                19, 51, 24, 56, 25, 57, 26, 58, 27, 59});
+    vectors.push_back(shuffle1);
+    auto shuffle2 = rewriter.create<vector::ShuffleOp>(
+        loc, VectorType::get({sizeFactor * vnni}, rewriter.getBF16Type()), vec1,
+        vec2, ArrayRef<int64_t>{4,  36, 5,  37, 6,  38, 7,  39, 12, 44, 13,
+                                45, 14, 46, 15, 47, 20, 52, 21, 53, 22, 54,
+                                23, 55, 28, 60, 29, 61, 30, 62, 31, 63});
+    vectors.push_back(shuffle2);
+  }
+
+  return vectors;
+}
+
+static SmallVector<Value> loadTiles(Location loc, PatternRewriter &rewriter,
+                                    Value subview, Value index, int64_t p1,
+                                    int64_t p2) {
+
+  SmallVector<Value> loads;
+  auto tileType = amx::TileType::get({16, 32}, rewriter.getBF16Type());
+  for (int i = 0; i < p1; i = i + 16) {
+    for (int j = 0; j < p2; j = j + 32) {
+      Value indexOp_i = rewriter.create<arith::ConstantIndexOp>(loc, i);
+      Value indexOp_j = rewriter.create<arith::ConstantIndexOp>(loc, j);
+      auto load = rewriter.create<amx::TileLoadOp>(
+          loc, tileType, subview, ValueRange{index, indexOp_i, indexOp_j});
+      loads.push_back(load);
+    }
+  }
+  return loads;
+}
+
+static SmallVector<Value> computeTileMul(Location loc,
+                                         PatternRewriter &rewriter,
+                                         SmallVector<Value> tileA,
+                                         SmallVector<Value> tileB,
+                                         ValueRange acc, int64_t M, int64_t N) {
+
+  SmallVector<Value> computedFMAs;
+  auto resType = amx::TileType::get({16, 16}, rewriter.getF32Type());
+  for (int i = 0, p = 0; i < M / 16; i++) {
+    for (int j = 0; j < N / 16; j++) {
+
+      auto fma = rewriter.create<amx::TileMulFOp>(loc, resType, tileA[i],
+                                                  tileB[j], acc[p]);
+      computedFMAs.push_back(fma);
+      p++;
+    }
+  }
+
+  return computedFMAs;
+}
+
+static void loadPackStore(Location loc, PatternRewriter &rewriter,
+                          Value subview, Value bBuffer, Type elementType,
+                          Value indx_r1, Value indx_r2, Value indx_s1,
+                          Value indx_s2, Value indx_s3, int64_t N,
+                          int64_t vnni) {
+  Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  for (int j = 0; j < N; j = j + 32) {
+    Value ind_j = rewriter.create<arith::ConstantIndexOp>(loc, j);
+    auto valueRow1 = rewriter.create<vector::LoadOp>(
+        loc, VectorType::get(32, elementType), subview,
+        ValueRange{c0, indx_r1, ind_j});
+
+    auto valueRow2 = rewriter.create<vector::LoadOp>(
+        loc, VectorType::get(32, elementType), subview,
+        ValueRange{c0, indx_r2, ind_j});
+
+    SmallVector<Value> shuffle =
+        performShuffle(loc, rewriter, valueRow1, valueRow2, 32, 16, vnni);
+
+    rewriter.create<vector::StoreOp>(loc, shuffle[0], bBuffer,
+                                     ValueRange{indx_s1, indx_s2, ind_j});
+    rewriter.create<vector::StoreOp>(loc, shuffle[1], bBuffer,
+                                     ValueRange{indx_s1, indx_s3, ind_j});
+  }
+}
+
+struct MicroKernelsAMXOp : OpRewritePattern<vector::ContractionOp> {
+  using OpRewritePattern<vector::ContractionOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::ContractionOp contractOp,
+                                PatternRewriter &rewriter) const override {
+
+    if (contractOp.getKind() != vector::CombiningKind::ADD)
+      return rewriter.notifyMatchFailure(
+          contractOp, "Only combining kind 'ADD' is supported now.");
+
+    // Check the vector contract operation satisfies the required loop
+    // pattern.
+    auto loops = getNestedLoop(contractOp);
+    if (failed(loops))
+      return rewriter.notifyMatchFailure(
+          contractOp, "Invalid loop nest in contract pattern");
+
+    auto nestedLoops = *loops;
+    auto kForOp = nestedLoops[0];
+    auto reductionForOp = nestedLoops[1];
+    auto nForOp = nestedLoops[2];
+    auto mForOp = nestedLoops[3];
+
+    // Get the Lhs, Rhs, and Acc of the contract operation.
+    auto vectorReadOpAcc =
+        reductionForOp.getInitArgs()[0].getDefiningOp<vector::TransferReadOp>();
+    auto vectorReadOpLhs =
+        contractOp.getLhs().getDefiningOp<vector::TransferReadOp>();
+    auto vectorReadOpRhs =
+        contractOp.getRhs().getDefiningOp<vector::TransferReadOp>();
+
+    // Retrive the element type (f32 or bf16 or f16)
+    auto subviewOpAcc =
+        vectorReadOpAcc.getOperand(0).getDefiningOp<memref::SubViewOp>();
+    auto subviewOpLhs =
+        vectorReadOpLhs.getOperand(0).getDefiningOp<memref::SubViewOp>();
+
+    auto elementType =
+        (cast<MemRefType>(subviewOpLhs.getType())).getElementType();
+    auto outsElementType =
+        (cast<MemRefType>(subviewOpAcc.getType())).getElementType();
+
+    bool amx = vnni::utils::hasAMX();
+    if (!amx)
+      return rewriter.notifyMatchFailure(contractOp,
+                                         "Lowering supported only for AMX.");
+
+    bool isBF16 = elementType.isBF16();
+
+    if (!isBF16)
+      return rewriter.notifyMatchFailure(contractOp,
+                                         "Only BF16 type supported.");
+
+    int64_t vnniFactor = 2;
+    bool isSplat = false;
+
+    // Check the operation type MatMul, B-MatMul, or BR-MatMul
+    SmallVector<vector::IteratorType> contractIteratorTypes =
+        contractOp.getIteratorTypesArray();
+    int reductionCount =
+        std::count(contractIteratorTypes.begin(), contractIteratorTypes.end(),
+                   vector::IteratorType::reduction);
+    auto lhsType = dyn_cast<ShapedType>(vectorReadOpLhs.getType());
+    auto rhsType = dyn_cast<ShapedType>(vectorReadOpRhs.getType());
+
+    if (isBF16 && reductionCount == 2 && lhsType.getRank() == 3 &&
+        rhsType.getRank() == 3)
+      isSplat = true;
+
+    if (!isSplat)
+      return rewriter.notifyMatchFailure(contractOp,
+                                         "Only Flat layout supported.");
+
+    if (reductionCount == 1)
+      return rewriter.notifyMatchFailure(
+          contractOp, "Batch matmul operation not supported yet");
+
+    int64_t M = 0;
+    int64_t N = 0;
+    int64_t K = 0;
+    int64_t vnni = 0;
+
+    M = lhsType.getDimSize(lhsType.getRank() - 2);
+    N = rhsType.getDimSize(lhsType.getRank() - 1);
+    K = lhsType.getDimSize(lhsType.getRank() - 1);
+    vnni = vnniFactor;
+
+    if (K != 32 && amx)
+      return rewriter.notifyMatchFailure(
+          contractOp,
+          "K tile size should be equal to 32 for Splat AMX lowering");
+
+    if (N != 32 && amx)
+      return rewriter.notifyMatchFailure(
+          contractOp, "Only, N tile size divisible by 32 is supported");
+
+    if (isTransposedMatrix(contractOp, elementType, isSplat))
+      return rewriter.notifyMatchFailure(contractOp,
+                                         "Matrices shoudn't be transposed.");
+
+    if (!permutationCheck(contractOp, elementType, isSplat))
+      return rewriter.notifyMatchFailure(
+          contractOp, "Affine map permutation not supported.");
+
+    rewriter.setInsertionPoint(mForOp);
+    auto i32Type = rewriter.getIntegerType(32);
+    auto i16Type = rewriter.getIntegerType(16);
+    auto cst16 = rewriter.create<arith::ConstantOp>(
+        reductionForOp.getLoc(), rewriter.getIntegerAttr(i32Type, 16));
+
+    rewriter.setInsertionPoint(reductionForOp);
+    llvm::SmallVector<Value> loopItrArgs;
+
+    // C matrix load:
+    // Creating the Zero Tile for the iter args.
+    if (isSplat && amx) {
+      for (int i = 0; i < M; i = i + 16) {
+        for (int j = 0; j < N; j = j + 16) {
+          auto tileType = amx::TileType::get({16, 16}, rewriter.getF32Type());
+          auto zeroTile = rewriter.create<amx::TileZeroOp>(
+              reductionForOp.getLoc(), tileType);
+          loopItrArgs.push_back(zeroTile);
+        }
+      }
+    }
+
+    SmallVector<Value> computedFMAs;
+    SmallVector<Value> loadsB;
+    SmallVector<Value> loadsA;
+
+    bool bigK = false;
+    bool oddK = false;
+
+    auto bufferType = MemRefType::get({2, K, N}, rewriter.getBF16Type());
+    auto bBuffer =
+        rewriter.create<memref::AllocaOp>(kForOp.getLoc(), bufferType);
+
+    // AMX-Splat
+    // code for the new s/w-pipeline
+    Value c0 =
+        rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), 0);
+    Value c1 =
+        rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), 1);
+    Value c2 =
+        rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), 2);
+    Value c16 =
+        rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), 16);
+    Value c32 =
+        rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), 32);
+
+    rewriter.create<scf::ForOp>(
+        reductionForOp.getLoc(), c0, c32, c2, ValueRange{},
+        [&](OpBuilder &nestedBuilder, Location loc, Value iv,
+            ValueRange iterArgs) {
+          IRMapping rhsMapping;
+          rhsMapping.map(
+              vectorReadOpRhs.getBase().getDefiningOp()->getOperand(1), c0);
+          rhsMapping.map(
+              vectorReadOpRhs.getBase().getDefiningOp()->getOperand(2), c0);
+          auto rhsClone = rewriter.clone(
+              *vectorReadOpRhs.getBase().getDefiningOp(), rhsMapping);
+
+          Value addI =
+              rewriter.create<arith::AddIOp>(reductionForOp.getLoc(), c1, iv);
+
+          Value divI =
+              rewriter.create<arith::DivUIOp>(reductionForOp.getLoc(), iv, c2);
+
+          Value addII = rewriter.create<arith::AddIOp>(reductionForOp.getLoc(),
+                                                       c16, divI);
+
+          loadPackStore(kForOp.getLoc(), rewriter, rhsClone->getResult(0),
+                        bBuffer, elementType, iv, addI, c0, divI, addII, N,
+                        vnni);
+
+          nestedBuilder.create<scf::YieldOp>(reductionForOp.getLoc());
+        });
+
+    Value subI = rewriter.create<arith::SubIOp>(
+        reductionForOp.getLoc(), reductionForOp.getUpperBound(), c1);
+
+    Value subIKloop = rewriter.create<arith::SubIOp>(
+        kForOp.getLoc(), kForOp.getUpperBound(), c32);
+
+    // Code to re-create the reduction and k loop with iter args
+    auto newReductionForOp = rewriter.create<scf::ForOp>(
+        reductionForOp.getLoc(), reductionForOp.getLowerBound(), subI,
+        reductionForOp.getStep(), loopItrArgs,
+        [&](OpBuilder &rewriterNewReductionForOp, Location locNewReductionForOp,
+            Value ivNewReductionForOp, ValueRange iterArgsNewReductionForOp) {
+          auto newKForOp = rewriter.create<scf::ForOp>(
+              kForOp.getLoc(), kForOp.getLowerBound(), subIKloop,
+              kForOp.getStep(), iterArgsNewReductionForOp,
+              [&](OpBuilder &rewriterNewKForOp, Location locNewKForOp,
+                  Value ivNewKForOp, ValueRange iterArgsNewKForOp) {
+                IRMapping mapping;
+                mapping.map(
+                    vectorReadOpLhs.getBase().getDefiningOp()->getOperand(1),
+                    ivNewReductionForOp);
+                mapping.map(
+                    vectorReadOpLhs.getBase().getDefiningOp()->getOperand(3),
+                    ivNewKForOp);
+                auto lhsClone = rewriterNewKForOp.clone(
+                    *vectorReadOpLhs.getBase().getDefiningOp(), mapping);
+
+                Value newIVk = rewriter.create<arith::AddIOp>(
+                    reductionForOp.getLoc(), c32, ivNewKForOp);
+
+                // AMX Splat
+                // New loop bounds for the reduction loop - to peel the last
+                // iteration
+
+                int64_t ubVal = 32;
+                mlir::Value ub = kForOp.getUpperBound();
+                if (auto constOp =
+                        ub.getDefiningOp<mlir::arith::ConstantOp>()) {
+                  if (auto intAttr = llvm::dyn_cast<mlir::IntegerAttr>(
+                          constOp.getValue())) {
+                    ubVal = intAttr.getInt();
+                  }
+                }
+
+                bigK = ubVal > 32;
+                oddK = (((ubVal / 32) % 2) == 1) && bigK;
+
+                IRMapping rhsMapping2;
+                rhsMapping2.map(
+                    vectorReadOpRhs.getBase().getDefiningOp()->getOperand(1),
+                    ivNewReductionForOp);
+                rhsMapping2.map(
+                    vectorReadOpRhs.getBase().getDefiningOp()->getOperand(2),
+                    newIVk);
+                auto rhsClone2 = rewriterNewKForOp.clone(
+                    *vectorReadOpRhs.getBase().getDefiningOp(), rhsMapping2);
+
+                // The AMX code starts here.
+                //
+                // 1st Reduction Loop
+                loadsA = loadTiles(kForOp.getLoc(), rewriter,
+                                   lhsClone->getResult(0), c0, M, K);
+
+                // Create a for loop for the shuffle
+
+                rewriter.create<scf::ForOp>(
+                    reductionForOp.getLoc(), c0, c32, c2, ValueRange{},
+                    [&](OpBuilder &nestedBuilder, Location loc, Value iv,
+                        ValueRange iterArgs) {
+                      Value addI = rewriter.create<arith::AddIOp>(
+                          reductionForOp.getLoc(), c1, iv);
+
+                      Value divI = rewriter.create<arith::DivUIOp>(
+                          reductionForOp.getLoc(), iv, c2);
+
+                      Value addII = rewriter.create<arith::AddIOp>(
+                          reductionForOp.getLoc(), c16, divI);
+
+                      Value divII = rewriter.create<arith::DivUIOp>(
+                          reductionForOp.getLoc(), newIVk, c32);
+                      auto rem = rewriter.create<arith::RemUIOp>(
+                          reductionForOp.getLoc(), rewriter.getIndexType(),
+                          divII, c2);
+
+                      if (oddK) {
+                        auto rem2 = rewriter.create<arith::RemUIOp>(
+                            reductionForOp.getLoc(), rewriter.getIndexType(),
+                            ivNewReductionForOp, c2);
+                        auto remAdd = rewriter.create<arith::AddIOp>(
+                            reductionForOp.getLoc(), rewriter.getIndexType(),
+                            rem, rem2);
+                        rem = rewriter.create<arith::RemUIOp>(
+                            reductionForOp.getLoc(), rewriter.getIndexType(),
+                            remAdd, c2);
+                      }
+
+                      loadPackStore(kForOp.getLoc(), rewriter,
+                                    rhsClone2->getResult(0), bBuffer,
+                                    elementType, iv, addI, rem, divI, addII, N,
+                                    vnni);
+
+                      nestedBuilder.create<scf::YieldOp>(
+                          reductionForOp.getLoc());
+                    });
+
+                Value divI = rewriter.create<arith::DivUIOp>(
+                    reductionForOp.getLoc(), ivNewKForOp, c32);
+                auto rem1 = rewriter.create<arith::RemUIOp>(
+                    reductionForOp.getLoc(), rewriter.getIndexType(), divI, c2);
+
+                if (oddK) {
+                  auto rem2 = rewriter.create<arith::RemUIOp>(
+                      reductionForOp.getLoc(), rewriter.getIndexType(),
+                      ivNewReductionForOp, c2);
+                  auto remAdd = rewriter.create<arith::AddIOp>(
+                      reductionForOp.getLoc(), rewriter.getIndexType(), rem1,
+                      rem2);
+                  rem1 = rewriter.create<arith::RemUIOp>(
+                      reductionForOp.getLoc(), rewriter.getIndexType(), remAdd,
+                      c2);
+                }
+
+                // Load B-Matrix
+                loadsB =
+                    loadTiles(kForOp.getLoc(), rewriter, bBuffer, rem1, K, N);
+
+                computedFMAs = computeTileMul(kForOp.getLoc(), rewriter, loadsA,
+                                              loadsB, iterArgsNewKForOp, M, N);
+
+                rewriterNewKForOp.create<scf::YieldOp>(locNewKForOp,
+                                                       computedFMAs);
+              });
+
+          // K-Loop (n-2 - n-1) within the 1st reduction loop
+          auto newKForOp1 = rewriter.create<scf::ForOp>(
+              kForOp.getLoc(), subIKloop, kForOp.getUpperBound(),
+              kForOp.getStep(), newKForOp.getResults(),
+              [&](OpBuilder &rewriterNewKForOp, Location locNewKForOp,
+                  Value ivNewKForOp, ValueRange iterArgsNewKForOp) {
+                IRMapping mapping;
+                mapping.map(
+                    vectorReadOpLhs.getBase().getDefiningOp()->getOperand(1),
+                    ivNewReductionForOp);
+                mapping.map(
+                    vectorReadOpLhs.getBase().getDefiningOp()->getOperand(3),
+                    ivNewKForOp);
+                auto lhsClone = rewriterNewKForOp.clone(
+                    *vectorReadOpLhs.getBase().getDefiningOp(), mapping);
+
+                Value newIV = rewriter.create<arith::AddIOp>(
+                    reductionForOp.getLoc(), c1, ivNewReductionForOp);
+
+                IRMapping mapping1;
+                mapping1.map(
+                    vectorReadOpRhs.getBase().getDefiningOp()->getOperand(1),
+                    newIV);
+                mapping1.map(
+                    vectorReadOpRhs.getBase().getDefiningOp()->getOperand(2),
+                    c0);
+                auto rhsClone2 = rewriterNewKForOp.clone(
+                    *vectorReadOpRhs.getBase().getDefiningOp(), mapping1);
+
+                //  Done with loading of A Matrix
+
+                loadsA = loadTiles(kForOp.getLoc(), rewriter,
+                                   lhsClone->getResult(0), c0, M, K);
+
+                // Shuffling
+                rewriter.create<scf::ForOp>(
+                    reductionForOp.getLoc(), c0, c32, c2, ValueRange{},
+                    [&](OpBuilder &nestedBuilder, Location loc, Value iv,
+                        ValueRange iterArgs) {
+                      Value addI = rewriter.create<arith::AddIOp>(
+                          reductionForOp.getLoc(), c1, iv);
+
+                      Value divI = rewriter.create<arith::DivUIOp>(
+                          reductionForOp.getLoc(), iv, c2);
+
+                      Value addII = rewriter.create<arith::AddIOp>(
+                          reductionForOp.getLoc(), c16, divI);
+
+                      Value cIndex = c0;
+
+                      if (!bigK || oddK) {
+                        Value c2 = rewriter.create<arith::ConstantIndexOp>(
+                            reductionForOp.getLoc(), 2);
+                        cIndex = rewriter.create<arith::RemUIOp>(
+                            reductionForOp.getLoc(), rewriter.getIndexType(),
+                            newIV, c2);
+                      }
+
+                      loadPackStore(kForOp.getLoc(), rewriter,
+                                    rhsClone2->getResult(0), bBuffer,
+                                    elementType, iv, addI, cIndex, divI, addII,
+                                    N, vnni);
+
+                      nestedBuilder.create<scf::YieldOp>(
+                          reductionForOp.getLoc());
+                    });
+
+                Value divI = rewriter.create<arith::DivUIOp>(
+                    reductionForOp.getLoc(), ivNewKForOp, c32);
+                Value rem1 = rewriter.create<arith::RemUIOp>(
+                    reductionForOp.getLoc(), rewriter.getIndexType(), divI, c2);
+
+                if (!bigK) {
+                  rem1 = rewriter.create<arith::RemUIOp>(
+                      reductionForOp.getLoc(), rewriter.getIndexType(),
+                      ivNewReductionForOp, c2);
+                }
+
+                if (oddK) {
+                  auto rem2 = rewriter.create<arith::RemUIOp>(
+                      reductionForOp.getLoc(), rewriter.getIndexType(),
+                      ivNewReductionForOp, c2);
+                  auto remAdd = rewriter.create<arith::AddIOp>(
+                      reductionForOp.getLoc(), rewriter.getIndexType(), rem1,
+                      rem2);
+                  rem1 = rewriter.create<arith::RemUIOp>(
+                      reductionForOp.getLoc(), rewriter.getIndexType(), remAdd,
+                      c2);
+                }
+
+                // Load B-Matrix
+                loadsB =
+                    loadTiles(kForOp.getLoc(), rewriter, bBuffer, rem1, K, N);
+
+                computedFMAs = computeTileMul(kForOp.getLoc(), rewriter, loadsA,
+                                              loadsB, iterArgsNewKForOp, M, N);
+
+                rewriterNewKForOp.create<scf::YieldOp>(locNewKForOp,
+                                                       computedFMAs);
+              });
+
+          rewriterNewReductionForOp.create<scf::YieldOp>(
+              locNewReductionForOp, newKForOp1.getResults());
+        });
+
+    // 2nd reduction loop
+    auto newReductionForOp1 = rewriter.create<scf::ForOp>(
+        reductionForOp.getLoc(), subI, reductionForOp.getUpperBound(),
+        reductionForOp.getStep(), newReductionForOp.getResults(),
+        [&](OpBuilder &rewriterNewReductionForOp, Location locNewReductionForOp,
+            Value ivNewReductionForOp, ValueRange iterArgsNewReductionForOp) {
+          auto newKForOp1 = rewriter.create<scf::ForOp>(
+              kForOp.getLoc(), kForOp.getLowerBound(), subIKloop,
+              kForOp.getStep(), iterArgsNewReductionForOp,
+              [&](OpBuilder &rewriterNewKForOp, Location locNewKForOp,
+                  Value ivNewKForOp, ValueRange iterArgsNewKForOp) {
+                IRMapping mapping;
+                mapping.map(
+                    vectorReadOpLhs.getBase().getDefiningOp()->getOperand(1),
+                    ivNewReductionForOp);
+                mapping.map(
+                    vectorReadOpLhs.getBase().getDefiningOp()->getOperand(3),
+                    ivNewKForOp);
+                auto lhsClone = rewriterNewKForOp.clone(
+                    *vectorReadOpLhs.getBase().getDefiningOp(), mapping);
+
+                Value newIVk = rewriter.create<arith::AddIOp>(
+                    reductionForOp.getLoc(), c32, ivNewKForOp);
+
+                IRMapping mapping1;
+                mapping1.map(
+                    vectorReadOpRhs.getBase().getDefiningOp()->getOperand(1),
+                    ivNewReductionForOp);
+                mapping1.map(
+                    vectorReadOpRhs.getBase().getDefiningOp()->getOperand(2),
+                    newIVk);
+                auto rhsClone2 = rewriterNewKForOp.clone(
+                    *vectorReadOpRhs.getBase().getDefiningOp(), mapping1);
+
+                //  Done with loading of A Matrix
+                loadsA = loadTiles(kForOp.getLoc(), rewriter,
+                                   lhsClone->getResult(0), c0, M, K);
+
+                // Shuffling
+
+                rewriter.create<scf::ForOp>(
+                    reductionForOp.getLoc(), c0, c32, c2, ValueRange{},
+                    [&](OpBuilder &nestedBuilder, Location loc, Value iv,
+                        ValueRange iterArgs) {
+                      Value addI = rewriter.create<arith::AddIOp>(
+                          reductionForOp.getLoc(), c1, iv);
+
+                      Value divI = rewriter.create<arith::DivUIOp>(
+                          reductionForOp.getLoc(), iv, c2);
+
+                      Value addII = rewriter.create<arith::AddIOp>(
+                          reductionForOp.getLoc(), c16, divI);
+
+                      Value divII = rewriter.create<arith::DivUIOp>(
+                          reductionForOp.getLoc(), newIVk, c32);
+                      auto rem = rewriter.create<arith::RemUIOp>(
+                          reductionForOp.getLoc(), rewriter.getIndexType(),
+                          divII, c2);
+
+                      if (oddK) {
+                        auto rem2 = rewriter.create<arith::RemUIOp>(
+                            reductionForOp.getLoc(), rewriter.getIndexType(),
+                            ivNewReductionForOp, c2);
+                        auto remAdd = rewriter.create<arith::AddIOp>(
+                            reductionForOp.getLoc(), rewriter.getIndexType(),
+                            rem, rem2);
+                        rem = rewriter.create<arith::RemUIOp>(
+                            reductionForOp.getLoc(), rewriter.getIndexType(),
+                            remAdd, c2);
+                      }
+
+                      loadPackStore(kForOp.getLoc(), rewriter,
+                                    rhsClone2->getResult(0), bBuffer,
+                                    elementType, iv, addI, rem, divI, addII, N,
+                                    vnni);
+
+                      nestedBuilder.create<scf::YieldOp>(
+                          reductionForOp.getLoc());
+                    });
+
+                Value divI = rewriter.create<arith::DivUIOp>(
+                    reductionForOp.getLoc(), ivNewKForOp, c32);
+                auto rem1 = rewriter.create<arith::RemUIOp>(
+                    reductionForOp.getLoc(), rewriter.getIndexType(), divI, c2);
+
+                if (oddK) {
+                  auto rem2 = rewriter.create<arith::RemUIOp>(
+                      reductionForOp.getLoc(), rewriter.getIndexType(),
+                      ivNewReductionForOp, c2);
+                  auto remAdd = rewriter.create<arith::AddIOp>(
+                      reductionForOp.getLoc(), rewriter.getIndexType(), rem1,
+                      rem2);
+                  rem1 = rewriter.create<arith::RemUIOp>(
+                      reductionForOp.getLoc(), rewriter.getIndexType(), remAdd,
+                      c2);
+                }
+
+                // Load B-Matrix
+                loadsB =
+                    loadTiles(kForOp.getLoc(), rewriter, bBuffer, rem1, K, N);
+
+                computedFMAs = computeTileMul(kForOp.getLoc(), rewriter, loadsA,
+                                              loadsB, iterArgsNewKForOp, M, N);
+
+                rewriterNewKForOp.create<scf::YieldOp>(locNewKForOp,
+                                                       computedFMAs);
+              });
+
+          // New code after the CGO paper
+
+          auto newKForOp2 = rewriter.create<scf::ForOp>(
+              kForOp.getLoc(), subIKloop, kForOp.getUpperBound(),
+              kForOp.getStep(), newKForOp1.getResults(),
+              [&](OpBuilder &rewriterNewKForOp, Location locNewKForOp,
+                  Value ivNewKForOp, ValueRange iterArgsNewKForOp) {
+                IRMapping mapping;
+                mapping.map(
+                    vectorReadOpLhs.getBase().getDefiningOp()->getOperand(1),
+                    ivNewReductionForOp);
+                mapping.map(
+                    vectorReadOpLhs.getBase().getDefiningOp()->getOperand(3),
+                    ivNewKForOp);
+                auto lhsClone = rewriterNewKForOp.clone(
+                    *vectorReadOpLhs.getBase().getDefiningOp(), mapping);
+
+                loadsA = loadTiles(kForOp.getLoc(), rewriter,
+                                   lhsClone->getResult(0), c0, M, K);
+
+                Value divI = rewriter.create<arith::DivUIOp>(
+                    reductionForOp.getLoc(), ivNewKForOp, c32);
+                Value rem1 = rewriter.create<arith::RemUIOp>(
+                    reductionForOp.getLoc(), rewriter.getIndexType(), divI, c2);
+
+                if (!bigK) {
+                  rem1 = rewriter.create<arith::RemUIOp>(
+                      reductionForOp.getLoc(), rewriter.getIndexType(),
+                      ivNewReductionForOp, c2);
+                }
+
+                if (oddK) {
+                  auto rem2 = rewriter.create<arith::RemUIOp>(
+                      reductionForOp.getLoc(), rewriter.getIndexType(),
+                      ivNewReductionForOp, c2);
+                  auto remAdd = rewriter.create<arith::AddIOp>(
+                      reductionForOp.getLoc(), rewriter.getIndexType(), rem1,
+                      rem2);
+                  rem1 = rewriter.create<arith::RemUIOp>(
+                      reductionForOp.getLoc(), rewriter.getIndexType(), remAdd,
+                      c2);
+                }
+
+                // Load B-Matrix
+                loadsB =
+                    loadTiles(kForOp.getLoc(), rewriter, bBuffer, rem1, K, N);
+
+                computedFMAs = computeTileMul(kForOp.getLoc(), rewriter, loadsA,
+                                              loadsB, iterArgsNewKForOp, M, N);
+
+                rewriterNewKForOp.create<scf::YieldOp>(locNewKForOp,
+                                                       computedFMAs);
+              });
+
+          rewriterNewReductionForOp.create<scf::YieldOp>(
+              locNewReductionForOp, newKForOp2.getResults());
+        });
+
+    // This is the final tile store.
+    SmallVector<Value> FMAs = newReductionForOp1.getResults();
+
+    //  Check the mlp pattern
+    arith::AddFOp addOp;
+    arith::MaximumFOp maxOp;
+    memref::SubViewOp subview_readOp;
+    memref::GetGlobalOp global_readOp;
+
+    auto zeroAttr = rewriter.getFloatAttr(rewriter.getF32Type(), 0.0);
+    auto denseAttr = DenseElementsAttr::get(
+        VectorType::get(16, rewriter.getF32Type()), zeroAttr);
+    auto cst_zero = rewriter.create<arith::ConstantOp>(
+        reductionForOp.getLoc(), VectorType::get(16, rewriter.getF32Type()),
+        denseAttr);
+
+    // We first retrive the source of the C matrix
+    auto subview_itr = subviewOpAcc.getSource();
+    Value subview_tmp = subviewOpAcc;
+
+    while (true) {
+      if (auto subview_2 = subview_itr.getDefiningOp<memref::SubViewOp>()) {
+
+        if (subview_2.getType().getRank() != 2) {
+          break;
+        }
+        subview_tmp = subview_itr;
+        subview_itr = subview_2.getSource();
+        continue;
+      }
+      break;
+    }
+
+    Value source;
+    if (subview_itr.getType().getRank() == 2) {
+      source = subview_itr;
+    } else {
+      source = subview_tmp;
+    }
+
+    // Find the use of C matrix and
+    // get the addOp and maxOp source for mlp
+    for (auto users : source.getUsers()) {
+      if (auto vectorRead = dyn_cast<vector::TransferReadOp>(users)) {
+        for (auto read_users : vectorRead->getUsers()) {
+          if (auto add_Op = dyn_cast<arith::AddFOp>(read_users)) {
+            addOp = add_Op;
+          }
+          if (auto max_Op = dyn_cast<arith::MaximumFOp>(read_users)) {
+            maxOp = max_Op;
+          }
+        }
+      }
+    }
+
+    // get the 2nd input source for addOp via vector transfer read
+    // ps: the 1st one is C matrix
+    if (addOp && maxOp) {
+      vector::TransferReadOp readOp_add;
+      if (auto vectBcst = addOp.getLhs().getDefiningOp<vector::BroadcastOp>()) {
+        if (auto vectorRead =
+                vectBcst.getSource().getDefiningOp<vector::TransferReadOp>()) {
+          readOp_add = vectorRead;
+        }
+      }
+
+      if (readOp_add) {
+        if (auto subview =
+                readOp_add.getBase().getDefiningOp<memref::SubViewOp>()) {
+          subview_readOp = subview;
+        }
+
+        if (auto global_read =
+                readOp_add.getBase().getDefiningOp<memref::GetGlobalOp>()) {
+          global_readOp = global_read;
+        }
+      }
+    }
+
+    // B-matrix (N) induction variable
+    auto nInductionVar = nForOp.getInductionVar();
+
+    if (amx) {
+
+      auto bufferType = MemRefType::get({M, N}, rewriter.getF32Type());
+      auto bBuffer =
+          rewriter.create<memref::AllocaOp>(kForOp.getLoc(), bufferType);
+
+      for (int i = 0, k = 0; i < M; i = i + 16) {
+        for (int j = 0; j < N; j = j + 16) {
+          Value indexOp_i = rewriter.create<arith::ConstantIndexOp>(
+              reductionForOp.getLoc(), i);
+          Value indexOp_j = rewriter.create<arith::ConstantIndexOp>(
+              reductionForOp.getLoc(), j);
+          rewriter.create<amx::TileStoreOp>(reductionForOp.getLoc(), bBuffer,
+                                            ValueRange{indexOp_i, indexOp_j},
+                                            FMAs[k]);
+          k++;
+        }
+      }
+
+      auto c0 =
+          rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), 0);
+      auto c16 =
+          rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), 16);
+      auto one =
+          rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), 1);
+      auto mBound =
+          rewriter.create<arith::ConstantIndexOp>(reductionForOp.getLoc(), M);
+
+      rewriter.create<scf::ForOp>(
+          reductionForOp.getLoc(), c0, mBound, one, ValueRange{},
+          [&](OpBuilder &nestedBuilder, Location loc, Value iv,
+              ValueRange iterArgs) {
+            auto row = rewriter.create<vector::LoadOp>(
+                reductionForOp.getLoc(),
+                VectorType::get(16, rewriter.getF32Type()), bBuffer,
+                ValueRange{iv, c0});
+
+            auto row2 = rewriter.create<vector::LoadOp>(
+                reductionForOp.getLoc(),
+                VectorType::get(16, rewriter.getF32Type()), bBuffer,
+                ValueRange{iv, c16});
+
+            auto shuffle1 = rewriter.create<vector::ShuffleOp>(
+                kForOp.getLoc(), VectorType::get(16, rewriter.getF32Type()),
+                row, row2,
+                ArrayRef<int64_t>{0, 1, 2, 3, 16, 17, 18, 19, 4, 5, 6, 7, 20,
+                                  21, 22, 23});
+
+            auto shuffle2 = rewriter.create<vector::ShuffleOp>(
+                kForOp.getLoc(), VectorType::get(16, rewriter.getF32Type()),
+                row, row2,
+                ArrayRef<int64_t>{8, 9, 10, 11, 24, 25, 26, 27, 12, 13, 14, 15,
+                                  28, 29, 30, 31});
+
+            // Load the C-Matrix
+            Value valueCRow1 = rewriter.create<vector::LoadOp>(
+                reductionForOp.getLoc(), VectorType::get(16, outsElementType),
+                subviewOpAcc, ValueRange{iv, c0});
+
+            Value valueCRow2 = rewriter.create<vector::LoadOp>(
+                reductionForOp.getLoc(), VectorType::get(16, outsElementType),
+                subviewOpAcc, ValueRange{iv, c16});
+
+            if (!outsElementType.isF32()) {
+              valueCRow1 = performBitcast(reductionForOp.getLoc(), rewriter,
+                                          valueCRow1, 16, vnni, elementType,
+                                          i32Type, i16Type, cst16);
+
+              valueCRow2 = performBitcast(reductionForOp.getLoc(), rewriter,
+                                          valueCRow2, 16, vnni, elementType,
+                                          i32Type, i16Type, cst16);
+            }
+
+            Value addOp = rewriter.create<arith::AddFOp>(
+                reductionForOp.getLoc(), shuffle1, valueCRow1);
+
+            Value addOp2 = rewriter.create<arith::AddFOp>(
+                reductionForOp.getLoc(), shuffle2, valueCRow2);
+
+            if (addOp && maxOp) {
+              Value add_row;
+              Value add_row1;
+              if (global_readOp) {
+                auto index_mlp = rewriter.create<arith::AddIOp>(
+                    reductionForOp.getLoc(), rewriter.getIndexType(),
+                    nInductionVar, c0);
+                auto index_mlp1 = rewriter.create<arith::AddIOp>(
+                    reductionForOp.getLoc(), rewriter.getIndexType(),
+                    nInductionVar, c16);
+                add_row = rewriter.create<vector::LoadOp>(
+                    reductionForOp.getLoc(), VectorType::get(16, elementType),
+                    global_readOp, ValueRange{index_mlp});
+                add_row1 = rewriter.create<vector::LoadOp>(
+                    reductionForOp.getLoc(), VectorType::get(16, elementType),
+                    global_readOp, ValueRange{index_mlp1});
+              }
+
+              if (subview_readOp) {
+                auto index_mlp = rewriter.create<arith::AddIOp>(
+                    reductionForOp.getLoc(), rewriter.getIndexType(),
+                    nInductionVar, c0);
+                auto index_mlp1 = rewriter.create<arith::AddIOp>(
+                    reductionForOp.getLoc(), rewriter.getIndexType(),
+                    nInductionVar, c16);
+
+                auto offsetsVec = subview_readOp.getMixedOffsets();
+                llvm::ArrayRef<mlir::OpFoldResult> offsets = offsetsVec;
+                auto val_offset = offsets[0].dyn_cast<mlir::Value>();
+
+                add_row = rewriter.create<vector::LoadOp>(
+                    reductionForOp.getLoc(), VectorType::get(16, elementType),
+                    subview_readOp.getSource(),
+                    ValueRange{val_offset, index_mlp});
+                add_row1 = rewriter.create<vector::LoadOp>(
+                    reductionForOp.getLoc(), VectorType::get(16, elementType),
+                    subview_readOp.getSource(),
+                    ValueRange{val_offset, index_mlp1});
+              }
+
+              // Fused mlp happens here
+              if (add_row) {
+                Value f32MLPVector;
+                Value f32MLPVector1;
+
+                if (elementType.isBF16()) {
+                  auto bitcast_i16 = rewriter.create<vector::BitCastOp>(
+                      reductionForOp.getLoc(), VectorType::get(16, i16Type),
+                      add_row);
+                  auto extend_i32 = rewriter.create<arith::ExtUIOp>(
+                      reductionForOp.getLoc(), VectorType::get(16, i32Type),
+                      bitcast_i16);
+                  auto shiftOp = rewriter.create<arith::ShLIOp>(
+                      reductionForOp.getLoc(), VectorType::get(16, i32Type),
+                      extend_i32,
+                      rewriter.create<vector::BroadcastOp>(
+                          reductionForOp.getLoc(), VectorType::get(16, i32Type),
+                          cst16));
+                  f32MLPVector = rewriter.create<vector::BitCastOp>(
+                      reductionForOp.getLoc(),
+                      VectorType::get(16, rewriter.getF32Type()), shiftOp);
+
+                  auto bitcast_i16_1 = rewriter.create<vector::BitCastOp>(
+                      reductionForOp.getLoc(), VectorType::get(16, i16Type),
+                      add_row1);
+                  auto extend_i32_1 = rewriter.create<arith::ExtUIOp>(
+                      reductionForOp.getLoc(), VectorType::get(16, i32Type),
+                      bitcast_i16_1);
+                  auto shiftOp_1 = rewriter.create<arith::ShLIOp>(
+                      reductionForOp.getLoc(), VectorType::get(16, i32Type),
+                      extend_i32_1,
+                      rewriter.create<vector::BroadcastOp>(
+                          reductionForOp.getLoc(), VectorType::get(16, i32Type),
+                          cst16));
+                  f32MLPVector1 = rewriter.create<vector::BitCastOp>(
+                      reductionForOp.getLoc(),
+                      VectorType::get(16, rewriter.getF32Type()), shiftOp_1);
+                }
+
+                auto add = rewriter.create<arith::AddFOp>(
+                    reductionForOp.getLoc(),
+                    mlir::VectorType::get(16, rewriter.getF32Type()), addOp,
+                    f32MLPVector);
+                auto max = rewriter.create<arith::MaximumFOp>(
+                    reductionForOp.getLoc(),
+                    mlir::VectorType::get(16, rewriter.getF32Type()), add,
+                    cst_zero);
+                addOp = max;
+
+                auto add_1 = rewriter.create<arith::AddFOp>(
+                    reductionForOp.getLoc(),
+                    mlir::VectorType::get(16, rewriter.getF32Type()), addOp2,
+                    f32MLPVector1);
+                auto max_1 = rewriter.create<arith::MaximumFOp>(
+                    reductionForOp.getLoc(),
+                    mlir::VectorType::get(16, rewriter.getF32Type()), add_1,
+                    cst_zero);
+                addOp2 = max_1;
+              }
+            }
+
+            auto cvtF32ToBf16 = rewriter.create<arith::TruncFOp>(
+                reductionForOp.getLoc(), VectorType::get({16}, elementType),
+                addOp);
+
+            auto cvtF32ToBf16_2 = rewriter.create<arith::TruncFOp>(
+                reductionForOp.getLoc(), VectorType::get({16}, elementType),
+                addOp2);
+
+            rewriter.create<vector::StoreOp>(reductionForOp.getLoc(),
+                                             cvtF32ToBf16, subviewOpAcc,
+                                             ValueRange{iv, c0});
+
+            rewriter.create<vector::StoreOp>(reductionForOp.getLoc(),
+                                             cvtF32ToBf16_2, subviewOpAcc,
+                                             ValueRange{iv, c16});
+
+            // Yield results from inner loop to outer loop
+            nestedBuilder.create<scf::YieldOp>(reductionForOp.getLoc());
+          });
+    }
+
+    // Remove the transfer write operations
+    if (addOp && maxOp && (subview_readOp || global_readOp)) {
+      Operation *writeOp_add;
+      for (auto val : addOp->getUsers()) {
+        writeOp_add = dyn_cast<vector::TransferWriteOp>(val);
+        if (writeOp_add) {
+          rewriter.eraseOp(writeOp_add);
+          break;
+        }
+      }
+
+      Operation *writeOp_max;
+      for (auto val : maxOp->getUsers()) {
+        writeOp_max = dyn_cast<vector::TransferWriteOp>(val);
+        if (writeOp_max) {
+          rewriter.eraseOp(writeOp_max);
+          break;
+        }
+      }
+    }
+
+    Value contractVal = reductionForOp.getResult(0);
+    Operation *writeOp;
+    for (auto val : contractVal.getUsers()) {
+      writeOp = dyn_cast<vector::TransferWriteOp>(val);
+      if (writeOp) {
+        rewriter.eraseOp(writeOp);
+        break;
+      }
+    }
+
+    return success();
+  }
+};
+
+void populateMicroKernelsAMXPatterns(RewritePatternSet &patterns) {
+  patterns.add<MicroKernelsAMXOp>(patterns.getContext());
+}
+
+struct MicroKernelsAMX : public impl::MicroKernelsAMXBase<MicroKernelsAMX> {
+  using MicroKernelsAMXBase::MicroKernelsAMXBase;
+
+  void runOnOperation() override {
+    RewritePatternSet patterns(&getContext());
+    populateMicroKernelsAMXPatterns(patterns);
+    GreedyRewriteConfig config;
+    config.setStrictness(GreedyRewriteStrictness::ExistingOps);
+    (void)applyPatternsGreedily(getOperation(), std::move(patterns), config);
+  }
+};
+} // namespace tpp
+} // namespace mlir
