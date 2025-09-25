@@ -453,7 +453,7 @@ struct MicroKernelsAMXOp : OpRewritePattern<vector::ContractionOp> {
     int64_t K = lhsType.getDimSize(lhsType.getRank() - 1);
     int64_t vnni = 2;
 
-    if (K != 32 && amx)
+    if (K != 32)
       return rewriter.notifyMatchFailure(
           contractOp,
           "K tile size should be equal to 32 for Fplat AMX lowering");
@@ -462,7 +462,7 @@ struct MicroKernelsAMXOp : OpRewritePattern<vector::ContractionOp> {
     // vector<16xbf16>. For this case, we need to pack with the help of
     // vector.interleaving. This is not the prime focus now as optimal register
     // blocking (2x2) except N tile to be divisible by 32.
-    if (N != 32 && amx)
+    if ((N % 32) != 0)
       return rewriter.notifyMatchFailure(
           contractOp, "Only, N tile size divisible by 32 is supported");
 
