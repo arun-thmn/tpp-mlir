@@ -329,6 +329,47 @@ static void loadPackStore(Location loc, PatternRewriter &rewriter,
   }
 }
 
+// Input IR:
+// vector.contract with register blocked
+//
+// Output IR:
+// s/w pipeline: load, pack to VNNI, and store the B sub matrix
+// of the 0thbatch-reduce and K iteration.
+// scf.for (0 to 31) {
+// 	load 0th and 1st  vector<32xbf16>, pack into VNNI, store the
+// 	first shuffle in 0th and 2nd shuffle in 16th index of the 
+// 	buffer.
+// }
+// scf.for (0 to br-2) { batch-reduce loop
+//   scf.for (0 to k-2) { K loop
+// 	(a) load A matrix
+//	(b) scf.loop for s/w pipeline: load, pack to VNNI, and store the B sub matrix 
+//	for the next K loop iteration
+//	(c) load VNNI pack B matrix of K iteration from the buffer
+//	(d) compute the tiled dot-product
+//   }
+//   Last iteration of the the K Loop (k-1) {
+//      (a) load A matrix
+//      (b) scf.loop for s/w pipeline: load, pack to VNNI, and store the B sub matrix
+//      for the next batch-reduce + K loop iteration
+//      (c) load VNNI pack B matrix of K iteration from the buffer
+//      (d) compute the tiled dot-product
+//   }
+// }
+// Last iteration of the batch-reduce loop (br-1) {
+//   scf.for (0 to k-2) { K loop
+//      (a) load A matrix
+//      (b) scf.loop for s/w pipeline: load, pack to VNNI, and store the B sub matrix
+//      for the next K loop iteration
+//      (c) load VNNI pack B matrix of K iteration from the buffer
+//      (d) compute the tiled dot-product
+//   }
+//   Last iteration of the the K Loop (k-1) {
+//      (a) load A matrix
+//      (b) load VNNI pack B matrix of K iteration from the buffer
+//      (c) compute the tiled dot-product
+//   }
+// }
 struct MicroKernelsAMXOp : OpRewritePattern<vector::ContractionOp> {
   using OpRewritePattern<vector::ContractionOp>::OpRewritePattern;
 
@@ -708,61 +749,59 @@ struct MicroKernelsAMXOp : OpRewritePattern<vector::ContractionOp> {
                     reductionForOp.getLoc(), c0, c32, c2, ValueRange{},
                     [&](OpBuilder &nestedBuilder, Location loc, Value iv,
                         ValueRange iterArgs) {
-                      Value addI = rewriter.create<arith::AddIOp>(
+
+                      Value i1_load = rewriter.create<arith::AddIOp>(
                           reductionForOp.getLoc(), c1, iv);
-
-                      Value divI = rewriter.create<arith::DivUIOp>(
+                      Value j_pos = rewriter.create<arith::DivUIOp>(
                           reductionForOp.getLoc(), iv, c2);
-
-                      Value addII = rewriter.create<arith::AddIOp>(
-                          reductionForOp.getLoc(), c16, divI);
+                      Value j16_pos  = rewriter.create<arith::AddIOp>(
+                          reductionForOp.getLoc(), c16, j_pos);
 
                       Value cIndex = c0;
-
                       if (!bigK || oddK) {
-                        Value c2 = rewriter.create<arith::ConstantIndexOp>(
-                            reductionForOp.getLoc(), 2);
                         cIndex = rewriter.create<arith::RemUIOp>(
                             reductionForOp.getLoc(), rewriter.getIndexType(),
                             ivK_add32, c2);
                       }
 
+
                       loadPackStore(kForOp.getLoc(), rewriter,
                                     rhsClone->getResult(0), bBuffer,
-                                    elementType, iv, addI, cIndex, divI, addII,
+                                    elementType, iv, i1_load, cIndex, j_pos, j16_pos,
                                     N, vnni);
 
                       nestedBuilder.create<scf::YieldOp>(
                           reductionForOp.getLoc());
                     });
 
-                Value divI = rewriter.create<arith::DivUIOp>(
+                Value quotient_K = rewriter.create<arith::DivUIOp>(
                     reductionForOp.getLoc(), ivNewKForOp, c32);
-                Value rem1 = rewriter.create<arith::RemUIOp>(
-                    reductionForOp.getLoc(), rewriter.getIndexType(), divI, c2);
+                Value rem_K = rewriter.create<arith::RemUIOp>(
+                    reductionForOp.getLoc(), rewriter.getIndexType(), quotient_K, c2);
 
                 if (!bigK) {
-                  rem1 = rewriter.create<arith::RemUIOp>(
+                  rem_K = rewriter.create<arith::RemUIOp>(
                       reductionForOp.getLoc(), rewriter.getIndexType(),
                       ivNewReductionForOp, c2);
                 }
 
                 if (oddK) {
-                  auto rem2 = rewriter.create<arith::RemUIOp>(
+                  auto rem_BR = rewriter.create<arith::RemUIOp>(
                       reductionForOp.getLoc(), rewriter.getIndexType(),
                       ivNewReductionForOp, c2);
                   auto remAdd = rewriter.create<arith::AddIOp>(
-                      reductionForOp.getLoc(), rewriter.getIndexType(), rem1,
-                      rem2);
-                  rem1 = rewriter.create<arith::RemUIOp>(
+                      reductionForOp.getLoc(), rewriter.getIndexType(), rem_K,
+                      rem_BR);
+                  rem_K = rewriter.create<arith::RemUIOp>(
                       reductionForOp.getLoc(), rewriter.getIndexType(), remAdd,
                       c2);
                 }
 
                 // Load B-Matrix
                 loadsB =
-                    loadTiles(kForOp.getLoc(), rewriter, bBuffer, rem1, K, N);
+                    loadTiles(kForOp.getLoc(), rewriter, bBuffer, rem_K, K, N);
 
+		// Compute the tiled dot-product with the A and B tile loads.
                 computedFMAs = computeTileMul(kForOp.getLoc(), rewriter, loadsA,
                                               loadsB, iterArgsNewKForOp, M, N);
 
@@ -774,7 +813,8 @@ struct MicroKernelsAMXOp : OpRewritePattern<vector::ContractionOp> {
               locNewReductionForOp, newKForOp_last.getResults());
         });
 
-    // 2nd reduction loop
+    // Create the last iteration of the batch-reduce loop (br-1). Inside create 
+    // both the {0 to n-2} and {n-1} K loop.
     auto newReductionForOp1 = rewriter.create<scf::ForOp>(
         reductionForOp.getLoc(), subBRLoop, reductionForOp.getUpperBound(),
         reductionForOp.getStep(), newReductionForOp.getResults(),
@@ -805,14 +845,13 @@ struct MicroKernelsAMXOp : OpRewritePattern<vector::ContractionOp> {
                 mapping1.map(
                     vectorReadOpRhs.getBase().getDefiningOp()->getOperand(2),
                     newIVk);
-                auto rhsClone2 = rewriterNewKForOp.clone(
+                auto rhsClone = rewriterNewKForOp.clone(
                     *vectorReadOpRhs.getBase().getDefiningOp(), mapping1);
 
                 //  Done with loading of A Matrix
                 loadsA = loadTiles(kForOp.getLoc(), rewriter,
                                    lhsClone->getResult(0), c0, M, K);
 
-                // Shuffling
 
                 rewriter.create<scf::ForOp>(
                     reductionForOp.getLoc(), c0, c32, c2, ValueRange{},
@@ -846,7 +885,7 @@ struct MicroKernelsAMXOp : OpRewritePattern<vector::ContractionOp> {
                       }
 
                       loadPackStore(kForOp.getLoc(), rewriter,
-                                    rhsClone2->getResult(0), bBuffer,
+                                    rhsClone->getResult(0), bBuffer,
                                     elementType, iv, addI, rem, divI, addII, N,
                                     vnni);
 
@@ -875,6 +914,7 @@ struct MicroKernelsAMXOp : OpRewritePattern<vector::ContractionOp> {
                 loadsB =
                     loadTiles(kForOp.getLoc(), rewriter, bBuffer, rem1, K, N);
 
+		// Compute the tiled dot-product with the A and B tile loads.
                 computedFMAs = computeTileMul(kForOp.getLoc(), rewriter, loadsA,
                                               loadsB, iterArgsNewKForOp, M, N);
 
