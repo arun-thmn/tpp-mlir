@@ -267,15 +267,16 @@ static SmallVector<Value> performShuffle(Location loc,
   return vectors;
 }
 
-// Function to load a 18x32 tiles.
+// Function to load a 16x32 tiles.
 static SmallVector<Value> loadTiles(Location loc, PatternRewriter &rewriter,
                                     Value subview, Value index, int64_t p1,
                                     int64_t p2) {
 
   SmallVector<Value> loads;
   auto tileType = amx::TileType::get({16, 32}, rewriter.getBF16Type());
-  for (int i = 0; i < p1; i = i + 16) {
-    for (int j = 0; j < p2; j = j + 32) {
+
+  for (int j = 0; j < p2; j = j + 32) {
+    for (int i = 0; i < p1; i = i + 16) {
       Value indexOp_i = rewriter.create<arith::ConstantIndexOp>(loc, i);
       Value indexOp_j = rewriter.create<arith::ConstantIndexOp>(loc, j);
       auto load = rewriter.create<amx::TileLoadOp>(

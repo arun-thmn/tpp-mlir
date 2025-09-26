@@ -28,7 +28,9 @@ func.func @gemm96(%arg0: memref<4x96x96xbf16>, %arg1: memref<4x96x96xbf16>, %arg
 
 // RUN: tpp-run -e mlp64 --entry-point-result=void --disable-vnni-packing -print --splat-to-random --init-type normal  -seed 123  %s > %t.1
 // RUN: tpp-run -e mlp64 --entry-point-result=void --disable-vnni-packing --vector-to-kernels --registerBlocking=32,32,32 -print  --splat-to-random --init-type normal  -seed 123  %s > %t.2
+// RUN: tpp-run -e mlp64 --entry-point-result=void --disable-vnni-packing --vector-to-kernels --registerBlocking=32,64,32 -print  --splat-to-random --init-type normal  -seed 123  %s > %t.3
 // RUN: fpcmp -r 0.001 %t.1 %t.2
+// RUN: fpcmp -r 0.001 %t.1 %t.3
 
 #map = affine_map<(d0, d1, d2, d3, d4, d5) -> (d0, d2, d3, d5)>
 #map1 = affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d2, d5, d4)>
