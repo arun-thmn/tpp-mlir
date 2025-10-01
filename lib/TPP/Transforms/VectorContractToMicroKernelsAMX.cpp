@@ -1,5 +1,4 @@
-//===- VectorContractToMicroKernelsAMX.cpp --------------------------*-
-// C++-*-===//
+//===- VectorContractToMicroKernelsAMX.cpp ------------------------*-C++-*-===//
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
@@ -234,6 +233,8 @@ static Value performBitcast(Location loc, PatternRewriter &rewriter,
   return value;
 }
 
+// Function to pack Flat layout rows into VNNI packed using the 
+// vpunpacklwd/hwd instructions.
 static SmallVector<Value> performShuffle(Location loc,
                                          PatternRewriter &rewriter, Value vec1,
                                          Value vec2, int64_t elementSize,
@@ -309,8 +310,12 @@ static SmallVector<Value> computeTileMul(Location loc,
   return computedFMAs;
 }
 
-// Function to load vector<32xbf16>, pact them into VNNI, and
-// store them into a buffer
+// Function to load vector<32xbf16>, pack them into VNNI, and
+// store them into a buffer.
+// indx_r1 and indx_r2 used to load two vector<32xbf16> from 
+// the subview. 
+// indx_s1 to choose the 0th or 1st buffer. indx_s2 and indx_s3
+// used to store the VNNI packed row into the buffer.
 static void loadPackStore(Location loc, PatternRewriter &rewriter,
                           Value subview, Value bBuffer, Type elementType,
                           Value indx_r1, Value indx_r2, Value indx_s1,
@@ -344,37 +349,44 @@ static void loadPackStore(Location loc, PatternRewriter &rewriter,
 // s/w pipeline: load, pack to VNNI, and store the B sub matrix
 // of the 0thbatch-reduce and K iteration.
 // scf.for (0 to 31) {
-// 	load 0th and 1st  vector<32xbf16>, pack into VNNI, store the
+// 	- load 0th and 1st  vector<32xbf16>, pack into VNNI, store the
 // 	first shuffle in 0th and 2nd shuffle in 16th index of the
 // 	buffer.
 // }
 // scf.for (0 to br-2) { batch-reduce loop
 //   scf.for (0 to k-2) { K loop
-// 	(a) load A matrix
-//	(b) scf.loop for s/w pipeline: load, pack to VNNI, and store the B sub
+// 	- load A matrix
+//	- scf.loop for s/w pipeline: load, pack to VNNI, and store the B sub
 // matrix 	for the next K loop iteration 	(c) load VNNI pack B matrix of K
 // iteration from the buffer 	(d) compute the tiled dot-product
 //   }
 //   Last iteration of the the K Loop (k-1) {
-//      (a) load A matrix
-//      (b) scf.loop for s/w pipeline: load, pack to VNNI, and store the B sub
+//      - load A matrix
+//      - scf.loop for s/w pipeline: load, pack to VNNI, and store the B sub
 //      matrix for the next batch-reduce + K loop iteration (c) load VNNI pack B
 //      matrix of K iteration from the buffer (d) compute the tiled dot-product
 //   }
 // }
 // Last iteration of the batch-reduce loop (br-1) {
 //   scf.for (0 to k-2) { K loop
-//      (a) load A matrix
-//      (b) scf.loop for s/w pipeline: load, pack to VNNI, and store the B sub
+//      - load A matrix
+//      - scf.loop for s/w pipeline: load, pack to VNNI, and store the B sub
 //      matrix for the next K loop iteration (c) load VNNI pack B matrix of K
 //      iteration from the buffer (d) compute the tiled dot-product
 //   }
 //   Last iteration of the the K Loop (k-1) {
-//      (a) load A matrix
-//      (b) load VNNI pack B matrix of K iteration from the buffer
-//      (c) compute the tiled dot-product
+//      - load A matrix
+//      - load VNNI pack B matrix of K iteration from the buffer
+//      - compute the tiled dot-product
 //   }
 // }
+//
+// scf.for (0 to M)
+//   scf.for (0 to N)
+//     - Load the ith and i+1th acc
+//     - Shuffle them as we packed using vpunpack
+//     - Load C matrix and do arith.add with the shuffle
+//     - Store back into C matrix
 struct MicroKernelsAMXOp : OpRewritePattern<vector::ContractionOp> {
   using OpRewritePattern<vector::ContractionOp>::OpRewritePattern;
 
@@ -457,7 +469,7 @@ struct MicroKernelsAMXOp : OpRewritePattern<vector::ContractionOp> {
     if (K != 32)
       return rewriter.notifyMatchFailure(
           contractOp,
-          "K tile size should be equal to 32 for Fplat AMX lowering");
+          "K tile size should be equal to 32 for Flat AMX lowering");
 
     // TODO: To support for the case where we have last set of two vectors as
     // vector<16xbf16>. For this case, we need to pack with the help of
