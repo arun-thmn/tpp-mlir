@@ -87,6 +87,13 @@
       "flags": [ "-n", "100" ],
       "extensions": [ "avx2" ]
     },
+    "mlir_gemm_bf16_vnni_dp2_vector_amx": {
+      "type": "IR-GEN",
+      "benchmark": [ "mlir-gen", "--kernel=const --data-type=bf16 --batch=512 --layers=1024,1024,1024,1024 --tiles=32,32,32 --vnni=2" ],
+      "environment": {},
+      "flags": [ "-n", "100", "-run-args='--nano-kernels --gemm-unroll=16,16,16 --registerBlocking=32,32,32'" ],
+      "extensions": [ "(amx_bf16)" ]
+    },
     "mlir_gemm_bf16_vnni_dp2_vector_avx512": {
       "type": "IR-GEN",
       "benchmark": [ "mlir-gen", "--kernel=const --data-type=bf16 --batch=512 --layers=1024,1024,1024,1024 --tiles=32,32,32 --vnni=2" ],
@@ -110,6 +117,13 @@
       "environment": {},
       "flags": [ "-n", "100", "-run-args='--disable-vnni-packing'" ],
       "extensions": [ "avx2" ]
+    },
+    "mlir_gemm_bf16_splat_dp2_vector_amx": {
+      "type": "IR-GEN",
+      "benchmark": [ "mlir-gen", "--kernel=const --data-type=bf16 --batch=512 --layers=1024,1024,1024,1024 --tiles=32,32,32 --vnni=0" ],
+      "environment": {},
+      "flags": [ "-n", "100", "-run-args='--disable-vnni-packing --nano-kernels --gemm-unroll=16,16,32 --registerBlocking=32,32,32'" ],
+      "extensions": [ "(amx_bf16)" ]
     },
     "mlir_gemm_bf16_splat_dp2_vector_avx512": {
       "type": "IR-GEN",
@@ -135,6 +149,13 @@
       "flags": [ "-n", "100" ],
       "extensions": [ "avx2" ]
     },
+    "mlir_mlp_bf16_vnni_dp2_vector_amx": {
+      "type": "IR-GEN",
+      "benchmark": [ "mlir-gen", "--kernel=const --bias --relu --data-type=bf16 --batch=512 --layers=1024,1024,1024,1024 --tiles=32,32,32 --vnni=2" ],
+      "environment": {},
+      "flags": [ "-n", "100", "-run-args='--def-parallel --nano-kernels --gemm-unroll=16,16,16 --registerBlocking=32,32,32'" ],
+      "extensions": [ "(amx_bf16)" ]
+    },
     "mlir_mlp_bf16_vnni_dp2_vector_avx512": {
       "type": "IR-GEN",
       "benchmark": [ "mlir-gen", "--kernel=const --bias --relu --data-type=bf16 --batch=512 --layers=1024,1024,1024,1024 --tiles=32,32,32 --vnni=2" ],
@@ -158,6 +179,13 @@
       "environment": {},
       "flags": [ "-n", "100", "-run-args='--disable-vnni-packing'" ],
       "extensions": [ "avx2" ]
+    },
+    "mlir_mlp_bf16_splat_dp2_vector_amx": {
+      "type": "IR-GEN",
+      "benchmark": [ "mlir-gen", "--kernel=const --bias --relu --data-type=bf16 --batch=512 --layers=1024,1024,1024,1024 --tiles=32,32,32 --vnni=0" ],
+      "environment": {},
+      "flags": [ "-n", "100", "-run-args='--disable-vnni-packing --nano-kernels --gemm-unroll=16,16,32 --registerBlocking=32,32,32'" ],
+      "extensions": [ "(amx_bf16)" ]
     },
     "mlir_mlp_bf16_splat_dp2_vector_avx2_arl": {
       "type": "IR-GEN",
